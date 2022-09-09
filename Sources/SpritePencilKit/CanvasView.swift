@@ -49,6 +49,12 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     public var verticalSymmetryLineLayer: CALayer?
     public var horizontalSymmetryLineLayer: CALayer?
     
+    // Style
+    public var checkerboardColor1: UIColor = .systemGray4
+    public var checkerboardColor2: UIColor = .systemGray5
+    public var tileGridColor: UIColor = .systemGray3
+    public var pixelGridColor: UIColor = .systemGray3
+    
     // General
     public var tool: Tool {
         get {
@@ -169,14 +175,14 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     
     public func makeCheckerboard() {
         let checkers = CIFilter.checkerboardGenerator()
-        checkers.color0 = CIColor(color: UIColor.systemGray5)
-        checkers.color1 = CIColor(color: UIColor.systemGray6)
+        checkers.color0 = CIColor(color: checkerboardColor1)
+        checkers.color1 = CIColor(color: checkerboardColor2)
         checkers.width = 1.0
         // TODO: Re-enable this for catalyst
         // BUG: "checkers.outputImage" causes NSArray crash
         #if targetEnvironment(macCatalyst)
         let image = CIImage()
-        checkerboardView.backgroundColor = .systemGray5
+        checkerboardView.backgroundColor = checkerboardColor1
         #else
         guard let image = checkers.outputImage else { return }
         #endif
@@ -280,7 +286,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
                 tileGridLayer = CAShapeLayer()
                 tileGridLayer?.lineWidth = 0.2
                 tileGridLayer?.path = path.cgPath
-                tileGridLayer?.strokeColor = UIColor.systemGray4.cgColor
+                tileGridLayer?.strokeColor = tileGridColor.cgColor
                 spriteView.layer.addSublayer(tileGridLayer!)
             }
         } else {
@@ -309,7 +315,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
                 pixelGridLayer = CAShapeLayer()
                 pixelGridLayer?.lineWidth = (0.1 / UIScreen.main.scale)
                 pixelGridLayer?.path = path.cgPath
-                pixelGridLayer?.strokeColor = UIColor.systemGray4.cgColor
+                pixelGridLayer?.strokeColor = pixelGridColor.cgColor
                 spriteView.layer.addSublayer(pixelGridLayer!)
             }
         } else {
