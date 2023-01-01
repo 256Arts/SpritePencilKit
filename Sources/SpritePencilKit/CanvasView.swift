@@ -26,7 +26,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     public var checkerboardView: UIImageView!
     public var spriteView: UIImageView!
     public var hoverView: UIView = {
-        let view = UIView(frame: CGRect(origin: .zero, size: CGSize(width: 2 + CanvasView.hoverViewBorderWidth/2, height: 2 + CanvasView.hoverViewBorderWidth/2)))
+        let view = UIView(frame: .zero)
         view.layer.borderWidth = CanvasView.hoverViewBorderWidth
         view.layer.borderColor = UIColor.label.cgColor
         view.isHidden = true
@@ -89,11 +89,22 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     public var applePencilCanEyedrop = true
     public var shouldFillPaths = false
     public var userWillStartZooming = false
+    
+    #if targetEnvironment(macCatalyst)
+    // BUG: Catalyst requires scale = 1 for unknown reason
+    public var spriteZoomScale: CGFloat = 1.0 { // Sprite view is normally 2x scale of checkerboard view
+        didSet {
+            toolSizeChanged(size: toolSizeCopy)
+        }
+    }
+    #else
     public var spriteZoomScale: CGFloat = 2.0 { // Sprite view is normally 2x scale of checkerboard view
         didSet {
             toolSizeChanged(size: toolSizeCopy)
         }
     }
+    #endif
+    
     public var dragStartPoint: CGPoint?
     public var spriteCopy: UIImage! {
         didSet {
@@ -136,6 +147,8 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         spriteView.layer.magnificationFilter = .nearest
         spriteView.translatesAutoresizingMaskIntoConstraints = false
         
+        hoverView.frame.size = CGSize(width: spriteZoomScale + CanvasView.hoverViewBorderWidth/2, height: spriteZoomScale + CanvasView.hoverViewBorderWidth/2)
+        
         addSubview(checkerboardView)
         checkerboardView.addSubview(spriteView)
         spriteView.addSubview(hoverView)
@@ -157,7 +170,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         undoAlternative.numberOfTouchesRequired = 2
         let redoAlternative = UITapGestureRecognizer(target: self, action: #selector(doRedoForAltGesture))
         redoAlternative.numberOfTouchesRequired = 3
-        let hover = UIHoverGestureRecognizer(target: self, action: #selector(mouseDidMove(with:)))
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(hoverGesture(with:)))
         addGestureRecognizer(undo)
         addGestureRecognizer(redo)
         addGestureRecognizer(redoAlternative)
@@ -381,7 +394,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     
     // MARK: - Touches & Hover
     
-    @objc public func mouseDidMove(with recognizer: UIHoverGestureRecognizer) {
+    @objc public func hoverGesture(with recognizer: UIHoverGestureRecognizer) {
         switch recognizer.state {
         case .began, .changed:
             let touchLocation = recognizer.location(in: spriteView)
