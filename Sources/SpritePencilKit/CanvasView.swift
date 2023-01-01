@@ -23,15 +23,9 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     // Delegates & Views
     public var documentController: DocumentController!
     public var canvasDelegate: CanvasViewDelegate?
-    public var checkerboardView: UIImageView!
-    public var spriteView: UIImageView!
-    public var hoverView: UIView = {
-        let view = UIView(frame: .zero)
-        view.layer.borderWidth = CanvasView.hoverViewBorderWidth
-        view.layer.borderColor = UIColor.label.cgColor
-        view.isHidden = true
-        return view
-    }()
+    public var checkerboardView = UIImageView()
+    public var spriteView = UIImageView()
+    public var hoverView = UIView()
     public var toolSizeCopy = PixelSize(width: 1, height: 1)
     override public var bounds: CGRect {
         didSet {
@@ -139,14 +133,15 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         pencilInteraction.delegate = self
         addInteraction(pencilInteraction)
         
-        checkerboardView = UIImageView()
         checkerboardView.layer.magnificationFilter = .nearest
         checkerboardView.translatesAutoresizingMaskIntoConstraints = false
         
-        spriteView = UIImageView()
         spriteView.layer.magnificationFilter = .nearest
         spriteView.translatesAutoresizingMaskIntoConstraints = false
         
+        hoverView.layer.borderWidth = CanvasView.hoverViewBorderWidth
+        hoverView.layer.borderColor = UIColor.label.cgColor
+        hoverView.isHidden = true
         hoverView.frame.size = CGSize(width: spriteZoomScale + CanvasView.hoverViewBorderWidth/2, height: spriteZoomScale + CanvasView.hoverViewBorderWidth/2)
         
         addSubview(checkerboardView)

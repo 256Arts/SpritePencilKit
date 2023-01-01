@@ -10,12 +10,14 @@ import CoreGraphics
 
 public struct ContextDataManager {
     
-    public var rowOffset: Int
     public var dataPointer: UnsafeMutablePointer<UInt8>
     
+    private var bytesPerRow: Int
+    private var bytesPerPixel: Int
+    
     public init(context: CGContext) {
-        let widthMultiple = 8
-        rowOffset = ((context.width + widthMultiple - 1) / widthMultiple) * widthMultiple // Round up to multiple of 8
+        bytesPerRow = context.bytesPerRow
+        bytesPerPixel = context.bitsPerPixel / 8
         dataPointer = {
             let capacity = context.width * context.height
             let pointer = context.data!.bindMemory(to: UInt8.self, capacity: capacity)
@@ -24,7 +26,7 @@ public struct ContextDataManager {
     }
     
     public func dataOffset(for point: PixelPoint) -> Int {
-        return 4 * ((point.y * rowOffset) + point.x)
+        return (point.y * bytesPerRow) + (point.x * bytesPerPixel)
     }
     
 }
