@@ -50,6 +50,9 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     public var pixelGridColor: UIColor = .systemGray3
     
     // General
+    public override var undoManager: UndoManager? {
+        documentController.undoManager
+    }
     public var tool: Tool {
         get {
             documentController.tool
@@ -133,6 +136,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         pencilInteraction.delegate = self
         addInteraction(pencilInteraction)
         
+        checkerboardView = UIImageView() // iOS 16.2 / macOS 13.1 BUG workaround: This is required to place the canvas view in the center.
         checkerboardView.layer.magnificationFilter = .nearest
         checkerboardView.translatesAutoresizingMaskIntoConstraints = false
         
