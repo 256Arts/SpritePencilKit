@@ -8,9 +8,9 @@
 
 import UIKit
 
-public class Palette: Equatable {
+public final class Palette: Equatable, Sendable {
     
-    public enum SpecialCase {
+    public enum SpecialCase: Sendable {
         case rrggbb, hhhhssbb, rrrgggbb
     }
     
@@ -87,7 +87,7 @@ public class Palette: Equatable {
         return lhs.name == rhs.name
     }
     
-    public var name: String
+    public let name: String
     public let specialCase: SpecialCase?
     public let colors: [ColorComponents]
     public let defaultGroupLength: Int

@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-public struct ColorComponents: Equatable {
+public struct ColorComponents: Equatable, Sendable {
     
     public static let clear = ColorComponents(red: 0, green: 0, blue: 0, opacity: 0)
     

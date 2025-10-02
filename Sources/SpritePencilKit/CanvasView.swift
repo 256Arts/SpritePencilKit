@@ -10,7 +10,7 @@ public protocol CanvasViewDelegate {
     func showColorPalette()
 }
 
-public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollViewDelegate, UIPencilInteractionDelegate {
+public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollViewDelegate {
     
     public static let defaultMinimumZoomScale: CGFloat = 1.0 // Must be low since if current < minimum, view will not zoom in.
     public static let defaultMaximumZoomScale: CGFloat = 32.0
@@ -75,11 +75,15 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     public var zoomEnabledOverride = false
     public var nonDrawingFingerAction = FingerAction.ignore
     public var fingerAction: FingerAction {
+        #if os(visionOS)
+        .draw
+        #else
         if UIPencilInteraction.prefersPencilOnlyDrawing && applePencilUsed {
             return nonDrawingFingerAction
         } else {
             return .draw
         }
+        #endif
     }
     public var twoFingerUndoEnabled = true
     public var applePencilUsed = false
@@ -132,9 +136,11 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         showsVerticalScrollIndicator = false
         showsHorizontalScrollIndicator = false
         
+        #if !os(visionOS)
         let pencilInteraction = UIPencilInteraction()
         pencilInteraction.delegate = self
         addInteraction(pencilInteraction)
+        #endif
         
         checkerboardView = UIImageView() // iOS 16.2 / macOS 13.1 BUG workaround: This is required to place the canvas view in the center.
         checkerboardView.layer.magnificationFilter = .nearest
@@ -266,9 +272,10 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         }
         self.setZoomScale(scale, animated: false)
         self.checkerboardView.frame.origin = .zero
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false, block: { _ in
-            self.zoomEnabledOverride = false
-        })
+        Task {
+            try? await Task.sleep(for: .seconds(0.1))
+            zoomEnabledOverride = false
+        }
     }
     
     public func refreshGrid() {
@@ -325,7 +332,11 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
                 }
                 path.close()
                 pixelGridLayer = CAShapeLayer()
+                #if os(visionOS)
+                pixelGridLayer?.lineWidth = 0.1
+                #else
                 pixelGridLayer?.lineWidth = (0.1 / UIScreen.main.scale)
+                #endif
                 pixelGridLayer?.path = path.cgPath
                 pixelGridLayer?.strokeColor = pixelGridColor.cgColor
                 spriteView.layer.addSublayer(pixelGridLayer!)
@@ -558,6 +569,9 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         case .pencil?:
             return true
         default:
+            #if os(visionOS)
+            return true
+            #else
             if UIPencilInteraction.prefersPencilOnlyDrawing && applePencilUsed {
                 switch tool {
                 case is EyedroperTool:
@@ -570,6 +584,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
             } else {
                 return true
             }
+            #endif
         }
     }
     
@@ -619,23 +634,6 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         guard let dragStartPoint = dragStartPoint else { return }
         let deltaPoint = delta(start: dragStartPoint, end: touchLocation)
         documentController.move(deltaPoint: deltaPoint)
-    }
-    
-    public func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-        switch UIPencilInteraction.preferredTapAction {
-        case .switchEraser:
-            if documentController.tool is EraserTool {
-                documentController.tool = documentController.previousTool
-            } else {
-                documentController.tool = documentController.eraserTool
-            }
-        case .switchPrevious:
-            documentController.tool = documentController.previousTool
-        case .showColorPalette:
-            canvasDelegate?.showColorPalette()
-        default:
-            break
-        }
     }
     
     // MARK: - Zooming
@@ -692,9 +690,33 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
             return
         }
         
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false, block: { _ in
-            self.userWillStartZooming = false
-        })
+        Task {
+            try? await Task.sleep(for: .seconds(0.1))
+            userWillStartZooming = false
+        }
     }
     
 }
+
+#if !os(visionOS)
+extension CanvasView: UIPencilInteractionDelegate {
+    
+    public func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+        switch UIPencilInteraction.preferredTapAction {
+        case .switchEraser:
+            if documentController.tool is EraserTool {
+                documentController.tool = documentController.previousTool
+            } else {
+                documentController.tool = documentController.eraserTool
+            }
+        case .switchPrevious:
+            documentController.tool = documentController.previousTool
+        case .showColorPalette:
+            canvasDelegate?.showColorPalette()
+        default:
+            break
+        }
+    }
+    
+}
+#endif

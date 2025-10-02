@@ -24,6 +24,7 @@ public protocol PaintParticlesDelegate: AnyObject {
     func painted(context: CGContext, color: UIColor?, at point: PixelPoint)
 }
 
+@MainActor
 public class DocumentController {
     
     public enum RotateDirection {
@@ -65,7 +66,9 @@ public class DocumentController {
     public var tool: Tool = PencilTool(width: 1) {
         didSet {
             if type(of: tool) != type(of: oldValue) {
+                #if !os(visionOS)
                 UISelectionFeedbackGenerator().selectionChanged()
+                #endif
                 previousTool = oldValue
             }
             switch tool {
