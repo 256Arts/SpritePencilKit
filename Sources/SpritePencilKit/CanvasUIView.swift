@@ -1,47 +1,40 @@
 import UIKit
 import CoreImage.CIFilterBuiltins
+import Combine
 
-public protocol CanvasViewDelegate {
-    func canvasViewDrawingDidChange(_ canvasView: CanvasView)
-    func canvasViewDidFinishRendering(_ canvasView: CanvasView)
-    func canvasViewDidBeginUsingTool(_ canvasView: CanvasView)
-    func canvasViewDidEndUsingTool(_ canvasView: CanvasView)
-    
-    func showColorPalette()
+public enum CanvasViewEvent {
+    case drawingDidChange
+    case didFinishRendering
+    case didBeginUsingTool
+    case didEndUsingTool
+    case showColorPalette
 }
 
-public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollViewDelegate {
+/// A checkerboard canvas that can be drawn on
+public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
     
-    public static let defaultMinimumZoomScale: CGFloat = 1.0 // Must be low since if current < minimum, view will not zoom in.
-    public static let defaultMaximumZoomScale: CGFloat = 32.0
     static let hoverViewBorderWidth: CGFloat = 0.1
     
     public enum FingerAction: String {
         case draw, move, eyedrop, ignore
     }
-
+    
     // Delegates & Views
-    public var documentController: DocumentController!
-    public var canvasDelegate: CanvasViewDelegate?
-    public var checkerboardView = UIImageView()
-    public var spriteView = UIImageView()
-    public var hoverView = UIView()
-    public var toolSizeCopy = PixelSize(width: 1, height: 1)
-    override public var bounds: CGRect {
-        didSet {
-            if documentController?.context != nil, !userWillStartZooming {
-                zoomToFit()
-            }
-        }
-    }
+    public weak var documentController: DocumentController!
+    var spriteView = UIImageView()
+    var hoverView = UIView()
+    var toolSizeCopy = PixelSize(width: 1, height: 1)
+    
+    // Single stream of CanvasView events
+    public let events = PassthroughSubject<CanvasViewEvent, Never>()
     
     // Grids
     public var pixelGridEnabled = false
     public var tileGridEnabled = false
-    public var tileGridLayer: CAShapeLayer?
-    public var pixelGridLayer: CAShapeLayer?
-    public var verticalSymmetryLineLayer: CALayer?
-    public var horizontalSymmetryLineLayer: CALayer?
+    var tileGridLayer: CAShapeLayer?
+    var pixelGridLayer: CAShapeLayer?
+    var verticalSymmetryLineLayer: CALayer?
+    var horizontalSymmetryLineLayer: CALayer?
     
     // Style
     public var checkerboardColor1: UIColor = .systemGray4
@@ -61,39 +54,27 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
             documentController.tool = newValue
         }
     }
-    public var zoomEnabled = true {
-        didSet {
-            if zoomEnabled {
-                minimumZoomScale = CanvasView.defaultMinimumZoomScale
-                maximumZoomScale = CanvasView.defaultMaximumZoomScale
-            } else {
-                minimumZoomScale = zoomScale
-                maximumZoomScale = zoomScale
-            }
-        }
-    }
-    public var zoomEnabledOverride = false
     public var nonDrawingFingerAction = FingerAction.ignore
-    public var fingerAction: FingerAction {
+    var fingerAction: FingerAction {
         #if os(visionOS)
         .draw
         #else
         if UIPencilInteraction.prefersPencilOnlyDrawing && applePencilUsed {
-            return nonDrawingFingerAction
+            nonDrawingFingerAction
         } else {
-            return .draw
+            .draw
         }
         #endif
     }
     public var twoFingerUndoEnabled = true
-    public var applePencilUsed = false
+    var applePencilUsed = false
     public var applePencilCanEyedrop = true
     public var shouldFillPaths = false
-    public var userWillStartZooming = false
+    public var shouldRecognizeGesturesSimultaneously = true
     
     #if targetEnvironment(macCatalyst)
     // BUG: Catalyst requires scale = 1 for unknown reason
-    public var spriteZoomScale: CGFloat = 1.0 { // Sprite view is normally 2x scale of checkerboard view
+    var spriteZoomScale: CGFloat = 1.0 { // Sprite view is normally 2x scale of checkerboard view
         didSet {
             toolSizeChanged(size: toolSizeCopy)
         }
@@ -106,65 +87,50 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     }
     #endif
     
-    public var dragStartPoint: CGPoint?
-    public var spriteCopy: UIImage! {
-        didSet {
-            contentSize = spriteCopy.size
-        }
-    }
-    public var shouldStartZooming: Bool {
-        (zoomEnabled && drawnPointsAreCancelable()) || zoomEnabledOverride
-    }
+    var dragStartPoint: CGPoint?
+    var spriteCopy: UIImage!
     
-    public override init(frame: CGRect) {
-        super.init(frame: frame)
-        documentController = DocumentController(canvasView: self)
+    public init(documentController: DocumentController) {
+        self.documentController = documentController
+        super.init(frame: .zero)
     }
+
     required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        documentController = DocumentController(canvasView: self)
+        fatalError("init(coder:) has not been implemented")
     }
     
     public func setupView() {
-        delegate = self
-        panGestureRecognizer.minimumNumberOfTouches = 2
-        delaysContentTouches = false
-        minimumZoomScale = CanvasView.defaultMinimumZoomScale
-        maximumZoomScale = CanvasView.defaultMaximumZoomScale
-        zoomScale = 4.0
-        scrollsToTop = false
-        showsVerticalScrollIndicator = false
-        showsHorizontalScrollIndicator = false
-        
         #if !os(visionOS)
         let pencilInteraction = UIPencilInteraction()
         pencilInteraction.delegate = self
         addInteraction(pencilInteraction)
         #endif
         
-        checkerboardView = UIImageView() // iOS 16.2 / macOS 13.1 BUG workaround: This is required to place the canvas view in the center.
-        checkerboardView.layer.magnificationFilter = .nearest
-        checkerboardView.translatesAutoresizingMaskIntoConstraints = false
+        layer.magnificationFilter = .nearest
+        translatesAutoresizingMaskIntoConstraints = false
         
         spriteView.layer.magnificationFilter = .nearest
         spriteView.translatesAutoresizingMaskIntoConstraints = false
         
-        hoverView.layer.borderWidth = CanvasView.hoverViewBorderWidth
+        hoverView.layer.borderWidth = Self.hoverViewBorderWidth
         hoverView.layer.borderColor = UIColor.label.cgColor
         hoverView.isHidden = true
-        hoverView.frame.size = CGSize(width: spriteZoomScale + CanvasView.hoverViewBorderWidth/2, height: spriteZoomScale + CanvasView.hoverViewBorderWidth/2)
+        hoverView.frame.size = CGSize(width: spriteZoomScale + Self.hoverViewBorderWidth/2, height: spriteZoomScale + Self.hoverViewBorderWidth/2)
         
-        addSubview(checkerboardView)
-        checkerboardView.addSubview(spriteView)
+        addSubview(spriteView)
         spriteView.addSubview(hoverView)
         
         NSLayoutConstraint.activate([
-            spriteView.topAnchor.constraint(equalTo: checkerboardView.topAnchor),
-            spriteView.bottomAnchor.constraint(equalTo: checkerboardView.bottomAnchor),
-            spriteView.leadingAnchor.constraint(equalTo: checkerboardView.leadingAnchor),
-            spriteView.trailingAnchor.constraint(equalTo: checkerboardView.trailingAnchor)
+            spriteView.topAnchor.constraint(equalTo: self.topAnchor),
+            spriteView.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            spriteView.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            spriteView.trailingAnchor.constraint(equalTo: self.trailingAnchor)
         ])
         
+        let draw = DrawGestureRecognizer(target: self, action: #selector(drawGesture))
+        draw.minimumPressDuration = 0
+        draw.allowableMovement = .greatestFiniteMagnitude
+        draw.delegate = self
         let undo = UISwipeGestureRecognizer(target: self, action: #selector(doUndo))
         undo.direction = .left
         undo.numberOfTouchesRequired = 3
@@ -176,6 +142,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         let redoAlternative = UITapGestureRecognizer(target: self, action: #selector(doRedoForAltGesture))
         redoAlternative.numberOfTouchesRequired = 3
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hoverGesture(with:)))
+        addGestureRecognizer(draw)
         addGestureRecognizer(undo)
         addGestureRecognizer(redo)
         addGestureRecognizer(redoAlternative)
@@ -185,10 +152,6 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         documentController.refresh()
         makeCheckerboard()
 		isUserInteractionEnabled = true
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.zoomToFit()
-        }
 	}
     
     public func makeCheckerboard() {
@@ -217,7 +180,7 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         let rect = CGRect(origin: .zero, size: CGSize(width: width, height: height))
         let ciContext = CIContext(options: nil)
         guard let cgImage = ciContext.createCGImage(image, from: rect) else { return }
-        checkerboardView.image = UIImage(cgImage: cgImage)
+        self.image = UIImage(cgImage: cgImage)
     }
     
     override public func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -229,8 +192,8 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
     
     public func toolSizeChanged(size: PixelSize) {
         toolSizeCopy = size
-        hoverView.bounds.size.width = CGFloat(size.width) * spriteZoomScale + CanvasView.hoverViewBorderWidth/2
-        hoverView.bounds.size.height = CGFloat(size.height) * spriteZoomScale + CanvasView.hoverViewBorderWidth/2
+        hoverView.bounds.size.width = CGFloat(size.width) * spriteZoomScale + Self.hoverViewBorderWidth/2
+        hoverView.bounds.size.height = CGFloat(size.height) * spriteZoomScale + Self.hoverViewBorderWidth/2
     }
     
     public func drawnPointsAreCancelable() -> Bool {
@@ -250,32 +213,6 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         }
         let maximumCancelableDrawnPoints = 8 * (toolSize.width * toolSize.height)
         return (documentController.currentOperationPixelPoints.count <= maximumCancelableDrawnPoints)
-    }
-    
-    public func zoomToFit() {
-        let viewSize = safeAreaLayoutGuide.layoutFrame.size
-        
-        let viewRatio = viewSize.width / viewSize.height
-        let spriteSize = CGSize(width: documentController.context.width, height: documentController.context.height)
-        let spriteRatio = spriteSize.width / spriteSize.height
-        
-        var scale: CGFloat = 1/spriteZoomScale
-        if viewRatio <= spriteRatio {
-            scale *= viewSize.width / spriteSize.width
-        } else {
-            scale *= viewSize.height / spriteSize.height
-        }
-        zoomEnabledOverride = true
-        if scale < self.minimumZoomScale || self.maximumZoomScale < scale {
-            self.minimumZoomScale = scale
-            self.maximumZoomScale = scale
-        }
-        self.setZoomScale(scale, animated: false)
-        self.checkerboardView.frame.origin = .zero
-        Task {
-            try? await Task.sleep(for: .seconds(0.1))
-            zoomEnabledOverride = false
-        }
     }
     
     public func refreshGrid() {
@@ -423,145 +360,161 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
             documentController.hoverPoint = nil
             return
         }
-        hoverView.frame.origin.x = CGFloat(point.x) * spriteZoomScale - CanvasView.hoverViewBorderWidth/2
-        hoverView.frame.origin.y = CGFloat(point.y) * spriteZoomScale - CanvasView.hoverViewBorderWidth/2
+        hoverView.frame.origin.x = CGFloat(point.x) * spriteZoomScale - Self.hoverViewBorderWidth/2
+        hoverView.frame.origin.y = CGFloat(point.y) * spriteZoomScale - Self.hoverViewBorderWidth/2
         hoverView.isHidden = false
         documentController.hoverPoint = point
     }
     
-    override public func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let touch = touches.first else { return }
-        switch touch.type {
-        case .pencil:
-            applePencilUsed = true
-            if !applePencilCanEyedrop, tool is EyedroperTool {
-                tool = documentController.pencilTool
-            }
-        default:
-            switch fingerAction {
-            case .move:
-                tool = MoveTool()
-            case .eyedrop:
-                tool = EyedroperTool()
-            default:
-                break
-            }
-        }
-        guard validateTouchesForCurrentTool(touches) else { return }
-        
-        switch tool {
-        case is EyedroperTool, is FillTool:
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        shouldRecognizeGesturesSimultaneously
+    }
+    
+    @objc func drawGesture(_ gesture: DrawGestureRecognizer) {
+        switch gesture.state {
+        case .possible:
             break
-        case is MoveTool:
-            spriteCopy = UIImage(cgImage: documentController.context.makeImage()!)
-            dragStartPoint = touch.location(in: spriteView)
-        default:
-            let touchLocation = touch.location(in: spriteView)
-            let point = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
-            documentController.currentOperationFirstPixelPoint = point
-        }
-        canvasDelegate?.canvasViewDidBeginUsingTool(self)
-        if let coalesced = event?.coalescedTouches(for: touch) {
-            addSamples(for: coalesced)
-        }
-    }
-    
-    override public func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let touch = touches.first, validateTouchesForCurrentTool(touches) else { return }
-        if let coalesced = event?.coalescedTouches(for: touch) {
-            addSamples(for: coalesced)
-        }
-    }
-    
-    override public func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let touch = touches.first, validateTouchesForCurrentTool(touches) else { return }
-        
-        switch tool {
-        case is EyedroperTool:
-            let location = touch.location(in: spriteView)
-            let point = makePixelPoint(touchLocation: location, toolSize: PixelSize(width: 1, height: 1))
-            documentController.eyedrop(at: point)
-        default:
-            if let coalesced = event?.coalescedTouches(for: touch) {
-                addSamples(for: coalesced)
-            }
-            let touchLocation = touch.location(in: spriteView)
-            let point = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
-            documentController.currentOperationLastPixelPoint = point
-            
-            switch tool {
-            case is PencilTool:
-                if shouldFillPaths {
-                    documentController.fillDrawnPath()
-                }
-                
-                let copp = documentController.currentOperationPixelPoints
-                documentController.undoManager?.registerUndo(withTarget: documentController, handler: { (target) in
-                    target.archivedPaint(pixels: copp)
-                })
-                documentController.editorDelegate?.refreshUndo()
-                documentController.currentOperationPixelPoints.removeAll()
-            case is MoveTool:
-                guard let dragStartPoint = dragStartPoint else { return }
-                moveViaTouchLocation(touchLocation)
-                
-                let undoDeltaPoint = delta(start: touchLocation, end: dragStartPoint)
-                documentController.undoManager?.registerUndo(withTarget: documentController) { (target) in
-                    target.archivedMove(deltaPoint: undoDeltaPoint)
-                }
-                documentController.editorDelegate?.refreshUndo()
-            case is FillTool:
-                let point = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
-                documentController.fill(at: point)
-                
-                let copp = documentController.currentOperationPixelPoints
-                documentController.undoManager?.registerUndo(withTarget: documentController, handler: { (target) in
-                    target.archivedPaint(pixels: copp)
-                })
-                documentController.editorDelegate?.refreshUndo()
-                documentController.currentOperationPixelPoints.removeAll()
-                documentController.refresh()
-            default:
-                let copp = documentController.currentOperationPixelPoints
-                documentController.undoManager?.registerUndo(withTarget: documentController, handler: { (target) in
-                    target.archivedPaint(pixels: copp)
-                })
-                documentController.editorDelegate?.refreshUndo()
-                documentController.currentOperationPixelPoints.removeAll()
-            }
+        case .began:
+            guard let touch = gesture.currentTouches.first else { return }
             
             switch touch.type {
             case .pencil:
-                break
+                applePencilUsed = true
+                if !applePencilCanEyedrop, tool is EyedroperTool {
+                    tool = documentController.pencilTool
+                }
             default:
-                if fingerAction == .move {
-                    tool = documentController.previousTool
+                switch fingerAction {
+                case .move:
+                    tool = MoveTool()
+                case .eyedrop:
+                    tool = EyedroperTool()
+                default:
+                    break
                 }
             }
+            
+            guard validateTouchesForCurrentTool(gesture.currentTouches) else { return }
+            
+            switch tool {
+            case is EyedroperTool, is FillTool:
+                break
+            case is MoveTool:
+                spriteCopy = UIImage(cgImage: documentController.context.makeImage()!)
+                dragStartPoint = touch.location(in: spriteView)
+            default:
+                let touchLocation = touch.location(in: spriteView)
+                let point = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
+                documentController.currentOperationFirstPixelPoint = point
+            }
+            events.send(.didBeginUsingTool)
+            if let coalesced = gesture.currentEvent?.coalescedTouches(for: touch) {
+                addSamples(for: coalesced)
+            }
+        case .changed:
+            guard let touch = gesture.currentTouches.first, validateTouchesForCurrentTool(gesture.currentTouches) else {
+                return
+            }
+            
+            if let coalesced = gesture.currentEvent?.coalescedTouches(for: touch) {
+                addSamples(for: coalesced)
+            }
+        case .ended:
+            guard let touch = gesture.currentTouches.first, validateTouchesForCurrentTool(gesture.currentTouches) else {
+                return
+            }
+            
+            switch tool {
+            case is EyedroperTool:
+                let location = touch.location(in: spriteView)
+                let point = makePixelPoint(touchLocation: location, toolSize: PixelSize(width: 1, height: 1))
+                documentController.eyedrop(at: point)
+            default:
+                if let coalesced = gesture.currentEvent?.coalescedTouches(for: touch) {
+                    addSamples(for: coalesced)
+                }
+                let touchLocation = touch.location(in: spriteView)
+                let point = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
+                documentController.currentOperationLastPixelPoint = point
+                
+                switch tool {
+                case is PencilTool:
+                    if shouldFillPaths {
+                        documentController.fillDrawnPath()
+                    }
+                    
+                    let copp = documentController.currentOperationPixelPoints
+                    documentController.undoManager?.registerUndo(withTarget: documentController, handler: { (target) in
+                        target.archivedPaint(pixels: copp)
+                    })
+                    documentController.eventPublisher.send(.refreshUndo)
+                    documentController.currentOperationPixelPoints.removeAll()
+                case is MoveTool:
+                    guard let dragStartPoint = dragStartPoint else { return }
+                    moveViaTouchLocation(touchLocation)
+                    
+                    let undoDeltaPoint = delta(start: touchLocation, end: dragStartPoint)
+                    documentController.undoManager?.registerUndo(withTarget: documentController) { (target) in
+                        target.archivedMove(deltaPoint: undoDeltaPoint)
+                    }
+                    documentController.eventPublisher.send(.refreshUndo)
+                case is FillTool:
+                    let point = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
+                    documentController.fill(at: point)
+                    
+                    let copp = documentController.currentOperationPixelPoints
+                    documentController.undoManager?.registerUndo(withTarget: documentController, handler: { (target) in
+                        target.archivedPaint(pixels: copp)
+                    })
+                    documentController.eventPublisher.send(.refreshUndo)
+                    documentController.currentOperationPixelPoints.removeAll()
+                    documentController.refresh()
+                default:
+                    let copp = documentController.currentOperationPixelPoints
+                    documentController.undoManager?.registerUndo(withTarget: documentController, handler: { (target) in
+                        target.archivedPaint(pixels: copp)
+                    })
+                    documentController.eventPublisher.send(.refreshUndo)
+                    documentController.currentOperationPixelPoints.removeAll()
+                }
+                
+                switch touch.type {
+                case .pencil:
+                    break
+                default:
+                    if fingerAction == .move {
+                        tool = documentController.previousTool
+                    }
+                }
+                hoverView.isHidden = true
+                documentController.hoverPoint = nil
+                documentController.currentOperationFirstPixelPoint = nil
+                documentController.currentOperationLastPixelPoint = nil
+            }
+            events.send(.didEndUsingTool)
+        case .cancelled:
+            guard validateTouchesForCurrentTool(gesture.currentTouches) else { return }
+            let shouldRemoveDrawnPoints = drawnPointsAreCancelable() && !documentController.currentOperationPixelPoints.isEmpty
+            
             hoverView.isHidden = true
             documentController.hoverPoint = nil
-            documentController.currentOperationFirstPixelPoint = nil
-            documentController.currentOperationLastPixelPoint = nil
-        }
-        canvasDelegate?.canvasViewDidEndUsingTool(self)
-    }
-    
-    override public func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard validateTouchesForCurrentTool(touches) else { return }
-        let shouldRemoveDrawnPoints = drawnPointsAreCancelable() && !documentController.currentOperationPixelPoints.isEmpty
-        
-        hoverView.isHidden = true
-        documentController.hoverPoint = nil
-        
-        if shouldRemoveDrawnPoints {
-            for (point, prevColor) in documentController.currentOperationPixelPoints {
-                documentController.simplePaint(colorComponents: prevColor, at: point)
+            
+            if shouldRemoveDrawnPoints {
+                for (point, prevColor) in documentController.currentOperationPixelPoints {
+                    documentController.simplePaint(colorComponents: prevColor, at: point)
+                }
+                documentController.refresh()
             }
-            documentController.refresh()
+            documentController.currentOperationPixelPoints.removeAll()
+            
+            events.send(.didEndUsingTool)
+        case .failed:
+            break
+        case .recognized:
+            break
+        @unknown default:
+            fatalError()
         }
-        documentController.currentOperationPixelPoints.removeAll()
-        
-        canvasDelegate?.canvasViewDidEndUsingTool(self)
     }
     
     public func validateTouchesForCurrentTool(_ touches: Set<UITouch>) -> Bool {
@@ -636,70 +589,10 @@ public class CanvasView: UIScrollView, UIGestureRecognizerDelegate, UIScrollView
         documentController.move(deltaPoint: deltaPoint)
     }
     
-    // MARK: - Zooming
-    
-    public func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-        return checkerboardView
-    }
-    
-    public func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
-        userWillStartZooming = shouldStartZooming && !zoomEnabledOverride
-    }
-    
-    public func scrollViewDidZoom(_ scrollView: UIScrollView) { // Called many times while zooming
-        
-        func centerContent() {
-            if contentSize.width < safeAreaLayoutGuide.layoutFrame.width {
-                contentOffset.x = ((contentSize.width - safeAreaLayoutGuide.layoutFrame.width) / 2) - safeAreaInsets.left + safeAreaInsets.right
-            }
-            if contentSize.height < safeAreaLayoutGuide.layoutFrame.height {
-                contentOffset.y = ((contentSize.height - safeAreaLayoutGuide.layoutFrame.height) / 2) - safeAreaInsets.top + safeAreaInsets.bottom
-            }
-            
-            var h: CGFloat = 0.0
-            var v: CGFloat = 0.0
-            if contentSize.width < bounds.width {
-                h = (safeAreaLayoutGuide.layoutFrame.width - contentSize.width) / 2.0
-            }
-            if contentSize.height < bounds.height {
-                v = (safeAreaLayoutGuide.layoutFrame.height - contentSize.height) / 2.0
-            }
-            contentInset = UIEdgeInsets(top: v + safeAreaInsets.top, left: h + safeAreaInsets.left, bottom: v + safeAreaInsets.bottom, right: h + safeAreaInsets.right)
-        }
-        
-        centerContent()
-    }
-    
-    public func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
-        guard let view = view else { return }
-        // Snap to 100%
-        let thresholdToSnap: CGFloat = 0.12
-        let zoomScaleDistanceRange = 1.0-thresholdToSnap...1.0+thresholdToSnap
-        
-        let contentWidthFraction = safeAreaLayoutGuide.layoutFrame.width / (view.safeAreaLayoutGuide.layoutFrame.width * zoomScale)
-        if zoomScaleDistanceRange.contains(contentWidthFraction) {
-            let zoom = (safeAreaLayoutGuide.layoutFrame.width / view.safeAreaLayoutGuide.layoutFrame.width)
-            setZoomScale(zoom, animated: true)
-            return
-        }
-        
-        let contentHeightFraction = safeAreaLayoutGuide.layoutFrame.height / (view.safeAreaLayoutGuide.layoutFrame.height * zoomScale)
-        if zoomScaleDistanceRange.contains(contentHeightFraction) {
-            let zoom = (safeAreaLayoutGuide.layoutFrame.height / view.safeAreaLayoutGuide.layoutFrame.height)
-            setZoomScale(zoom, animated: true)
-            return
-        }
-        
-        Task {
-            try? await Task.sleep(for: .seconds(0.1))
-            userWillStartZooming = false
-        }
-    }
-    
 }
 
 #if !os(visionOS)
-extension CanvasView: UIPencilInteractionDelegate {
+extension CanvasUIView: UIPencilInteractionDelegate {
     
     public func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
         switch UIPencilInteraction.preferredTapAction {
@@ -712,7 +605,7 @@ extension CanvasView: UIPencilInteractionDelegate {
         case .switchPrevious:
             documentController.tool = documentController.previousTool
         case .showColorPalette:
-            canvasDelegate?.showColorPalette()
+            events.send(.showColorPalette)
         default:
             break
         }
@@ -720,3 +613,4 @@ extension CanvasView: UIPencilInteractionDelegate {
     
 }
 #endif
+

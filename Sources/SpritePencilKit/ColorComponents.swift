@@ -8,7 +8,7 @@
 
 import SwiftUI
 
-public struct ColorComponents: Equatable, Sendable {
+public struct ColorComponents: Equatable, Hashable, Identifiable, Sendable {
     
     public static let clear = ColorComponents(red: 0, green: 0, blue: 0, opacity: 0)
     
@@ -79,5 +79,13 @@ public struct ColorComponents: Equatable, Sendable {
     
     public static func ==(left: ColorComponents, right: ColorComponents) -> Bool {
         return (left.opacity == 0 || (left.red == right.red && left.green == right.green && left.blue == right.blue)) && left.opacity == right.opacity
+    }
+    
+    public var id: String {
+        "\(colorSpace):\(red),\(green),\(blue),\(opacity)"
+    }
+    
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(self.id)
     }
 }

@@ -6,7 +6,9 @@
 //  Copyright © 2018 Jayden Irwin. All rights reserved.
 //
 
+#if canImport(UIKit)
 import UIKit
+#endif
 
 public final class Palette: Equatable, Sendable {
     
@@ -101,6 +103,7 @@ public final class Palette: Equatable, Sendable {
         self.groupLengths = groupLengths
     }
     
+    #if canImport(UIKit)
     public init?(name: String, image: UIImage, defaultGroupLength: Int, groupLengths: [Int] = []) {
         guard image.size.height == 1 else { return nil }
         self.name = name
@@ -125,6 +128,7 @@ public final class Palette: Equatable, Sendable {
         self.colors = colors
         UIGraphicsEndImageContext()
     }
+    #endif
     
     public func highlight(forColorComponents components: ColorComponents) -> ColorComponents {
         switch specialCase {

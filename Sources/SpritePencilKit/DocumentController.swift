@@ -6,29 +6,24 @@
 //  Copyright © 2018 Jayden Irwin. All rights reserved.
 //
 
+import Combine
 import UIKit
 import CoreImage.CIFilterBuiltins
 
-public protocol ToolDelegate: AnyObject {
-    func selectTool(_ tool: Tool)
-}
-public protocol EditorDelegate: AnyObject {
-    var hoverPoint: PixelPoint? { get set }
-    func eyedropColor(colorComponents components: ColorComponents, at point: PixelPoint)
-    func refreshUndo()
-}
-public protocol RecentColorDelegate: AnyObject {
-    func usedColor(components: ColorComponents)
-}
-public protocol PaintParticlesDelegate: AnyObject {
-    func painted(context: CGContext, color: UIColor?, at point: PixelPoint)
-}
-
-@MainActor
+@MainActor @Observable
 public class DocumentController {
     
     public enum RotateDirection {
         case left, right
+    }
+    
+    public enum Event {
+        case selectTool(Tool)
+        case eyedropColor(ColorComponents, point: PixelPoint)
+        case refreshUndo
+        case usedColor(ColorComponents)
+        case hovered(PixelPoint?)
+        case painted(context: CGContext, color: UIColor?, point: PixelPoint)
     }
     
     public var context: CGContext! {
@@ -50,7 +45,7 @@ public class DocumentController {
     public var checkeredDrawingMode = false
     public var hoverPoint: PixelPoint? {
         didSet {
-            editorDelegate?.hoverPoint = hoverPoint
+            eventPublisher.send(.hovered(hoverPoint))
         }
     }
     
@@ -89,28 +84,24 @@ public class DocumentController {
             default:
                 canvasView.toolSizeChanged(size: PixelSize(width: 1, height: 1))
             }
-            toolDelegate?.selectTool(tool)
+            eventPublisher.send(.selectTool(tool))
         }
     }
     
     // Delegates
     weak public var undoManager: UndoManager?
-    weak public var recentColorDelegate: RecentColorDelegate?
-    weak public var toolDelegate: ToolDelegate?
-    weak public var editorDelegate: EditorDelegate?
-    weak public var paintParticlesDelegate: PaintParticlesDelegate?
-    weak public var canvasView: CanvasView!
+    weak public var zoomableView: ZoomableUIView!
+    weak public var canvasView: CanvasUIView!
+    public var eventPublisher: PassthroughSubject<Event, Never> = .init()
     
-    public init(canvasView: CanvasView) {
-        self.canvasView = canvasView
-    }
+    public init() { }
     
     public func refresh() {
-        canvasView.canvasDelegate?.canvasViewDrawingDidChange(canvasView)
+        canvasView.events.send(.drawingDidChange)
         let image = UIImage(cgImage: context.makeImage()!)
         canvasView.spriteView.image = image
-        canvasView.canvasDelegate?.canvasViewDidFinishRendering(canvasView)
-        editorDelegate?.refreshUndo()
+        canvasView.events.send(.didFinishRendering)
+        eventPublisher.send(.refreshUndo)
     }
     
     public func undo() {
@@ -150,7 +141,7 @@ public class DocumentController {
         undoManager?.registerUndo(withTarget: self, handler: { (target) in
             target.archivedPaint(pixels: copp)
         })
-        editorDelegate?.refreshUndo()
+        eventPublisher.send(.refreshUndo)
         currentOperationPixelPoints.removeAll()
     }
     
@@ -201,9 +192,9 @@ public class DocumentController {
         }
         
         if 32 < colorComponents.opacity {
-            recentColorDelegate?.usedColor(components: colorComponents)
+            eventPublisher.send(.usedColor(colorComponents))
         }
-        paintParticlesDelegate?.painted(context: context, color: UIColor(components: colorComponents), at: point)
+        eventPublisher.send(.painted(context: context, color: UIColor(components: colorComponents), point: point))
     }
     
     public func fillDrawnPath() {
@@ -227,7 +218,7 @@ public class DocumentController {
         let components = getColorComponents(at: point)
         guard components.opacity == 255 else { return }
         
-        editorDelegate?.eyedropColor(colorComponents: components, at: point)
+        eventPublisher.send(.eyedropColor(components, point: point))
     }
     
     public func getColorComponents(at point: PixelPoint) -> ColorComponents {
@@ -316,12 +307,6 @@ public class DocumentController {
         context.clear()
         context.saveGState()
         let number: CGFloat = vertically ? 1.0 : -1.0
-        // iOS 13 BUG?
-        // The bug is that the context will flip vertically every time, even when you dont ask it to.
-//        let tx = vertically ? 0.0 : CGFloat(context.width)
-//        let ty = vertically ? CGFloat(context.height) : 0.0
-//        let flipVertical = CGAffineTransform(a: number, b: 0.0, c: 0.0, d: -number, tx: tx, ty: ty)
-//        context.concatenate(flipVertical)
         
         // FIX (1/2)
         if !vertically {
@@ -356,11 +341,6 @@ public class DocumentController {
         let image = context.makeImage()!
         context.saveGState()
         context.clear()
-        // iOS 13 BUG?
-        // The bug is that the context will flip vertically every time, even when you dont ask it to.
-//        context.translateBy(x: CGFloat(context.width)/2.0, y: CGFloat(context.height)/2.0)
-//        context.rotate(by: CGFloat.pi / (direction == .right ? 2.0 : -2.0))
-//        context.draw(image, in: CGRect(origin: CGPoint(x: -context.width/2, y: -context.height/2), size: CGSize(width: context.width, height: context.height)))
         
         // FIX
         let number: CGFloat = direction == .left ? 1.0 : -1.0
@@ -501,7 +481,7 @@ public class DocumentController {
         self.context = context
         refresh()
         canvasView.makeCheckerboard()
-        canvasView.zoomToFit()
+        zoomableView.zoomToFit()
         undoManager?.registerUndo(withTarget: self, handler: { (target) in
             //
         })
