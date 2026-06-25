@@ -43,6 +43,7 @@ public class DocumentController {
     public var verticalSymmetry = false
     public var horizontalSymmetry = false
     public var checkeredDrawingMode = false
+    public var brushShape: BrushShape = .square
     public var hoverPoint: PixelPoint? {
         didSet {
             eventPublisher.send(.hovered(hoverPoint))
@@ -165,7 +166,10 @@ public class DocumentController {
             for yOffset in 0..<(sizeInBounds.height) {
                 let brushPoint = PixelPoint(x: pointInBounds.x + xOffset, y: pointInBounds.y + yOffset)
                 guard !currentOperationPixelPoints.keys.contains(brushPoint) else { continue }
-                
+                // Mask against the brush shape using the offset within the full
+                // (unclipped) brush, so the circle stays centered at canvas edges.
+                guard brushShape.includes(column: brushPoint.x - point.x, row: brushPoint.y - point.y, diameter: size.width) else { continue }
+
                 if !checkeredDrawingMode || (brushPoint.x % 2 != brushPoint.y % 2) {
                     simplePaint(colorComponents: colorComponents, at: brushPoint)
                 }
@@ -253,6 +257,7 @@ public class DocumentController {
     public func highlight(at point: PixelPoint, size: PixelSize) {
         for xOffset in 0..<size.width {
             for yOffset in 0..<size.height {
+                guard brushShape.includes(column: xOffset, row: yOffset, diameter: size.width) else { continue }
                 let brushPoint = PixelPoint(x: point.x + xOffset, y: point.y + yOffset)
                 guard !currentOperationPixelPoints.keys.contains(brushPoint) else { continue }
                 let highlightComponents = (palette ?? Palette.sp16).highlight(forColorComponents: getColorComponents(at: brushPoint))
@@ -264,6 +269,7 @@ public class DocumentController {
     public func shadow(at point: PixelPoint, size: PixelSize) {
         for xOffset in 0..<size.width {
             for yOffset in 0..<size.height {
+                guard brushShape.includes(column: xOffset, row: yOffset, diameter: size.width) else { continue }
                 let brushPoint = PixelPoint(x: point.x + xOffset, y: point.y + yOffset)
                 guard !currentOperationPixelPoints.keys.contains(brushPoint) else { continue }
                 let shadowComponents = (palette ?? Palette.sp16).shadow(forColorComponents: getColorComponents(at: brushPoint))

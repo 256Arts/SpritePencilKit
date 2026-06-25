@@ -194,6 +194,10 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         toolSizeCopy = size
         hoverView.bounds.size.width = CGFloat(size.width) * spriteZoomScale + Self.hoverViewBorderWidth/2
         hoverView.bounds.size.height = CGFloat(size.height) * spriteZoomScale + Self.hoverViewBorderWidth/2
+        // Round the hover outline when a circular brush is active (and only when
+        // the shape actually differs from a square — i.e. brushes larger than 2px).
+        let rounded = documentController.brushShape == .circle && 2 < size.width
+        hoverView.layer.cornerRadius = rounded ? hoverView.bounds.size.width / 2 : 0
     }
     
     public func drawnPointsAreCancelable() -> Bool {
