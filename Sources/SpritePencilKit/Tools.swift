@@ -15,8 +15,10 @@ public enum BrushShape: String, CaseIterable, Equatable, Hashable {
     /// Whether the cell at `(column, row)` within a `diameter`×`diameter` brush
     /// is part of the brush mask. `column`/`row` are offsets from the brush's
     /// top-left corner. Square always fills; circle keeps cells whose center
-    /// falls within the inscribed circle. Brushes 2px and smaller are solid
-    /// blocks for both shapes (a round 1–2px brush has no meaningful curve).
+    /// falls within the inscribed circle, tightened by half a pixel so the
+    /// smallest round brush (3px) renders as a plus rather than a full square.
+    /// Brushes 2px and smaller are solid blocks for both shapes (a round 1–2px
+    /// brush has no meaningful curve).
     public func includes(column: Int, row: Int, diameter: Int) -> Bool {
         switch self {
         case .square:
@@ -26,7 +28,7 @@ public enum BrushShape: String, CaseIterable, Equatable, Hashable {
             let radius = Double(diameter) / 2.0
             let dx = Double(column) + 0.5 - radius
             let dy = Double(row) + 0.5 - radius
-            return dx * dx + dy * dy <= radius * radius
+            return dx * dx + dy * dy <= radius * radius - 0.5
         }
     }
 }

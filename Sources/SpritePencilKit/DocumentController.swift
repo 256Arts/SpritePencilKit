@@ -232,17 +232,31 @@ public class DocumentController {
     }
     
     public func move(deltaPoint: CGSize) {
+        // Blit the CGImage straight into the pixel buffer. UIImage.draw(at:) can't be
+        // used here: it targets the current UIKit graphics context, which no longer
+        // exists during a move after the canvas refactor, so it silently drew nothing
+        // and left the cleared (blank) context behind.
+        guard let cgImage = canvasView.spriteCopy.cgImage else { return }
         context.clear()
-        let newOrigin = CGPoint(x: deltaPoint.width, y: deltaPoint.height)
-        canvasView.spriteCopy.draw(at: newOrigin)
-        
-        // Draw 3 more times to create seemless loop
-        let x = deltaPoint.width + (0 < deltaPoint.width ? -1 : 1) * CGFloat(context.width)
-        let y = deltaPoint.height + (0 < deltaPoint.height ? -1 : 1) * CGFloat(context.height)
-        
-        canvasView.spriteCopy.draw(at: CGPoint(x: x, y: deltaPoint.height))
-        canvasView.spriteCopy.draw(at: CGPoint(x: deltaPoint.width, y: y))
-        canvasView.spriteCopy.draw(at: CGPoint(x: x, y: y))
+
+        let w = CGFloat(context.width)
+        let h = CGFloat(context.height)
+        let size = CGSize(width: w, height: h)
+        let dx = deltaPoint.width
+        let dy = deltaPoint.height
+
+        // Second copy on each axis creates the seamless wrap-around while dragging.
+        let wrapX = dx + (0 < dx ? -1 : 1) * w
+        let wrapY = dy + (0 < dy ? -1 : 1) * h
+
+        // CGContext is y-up (origin bottom-left), so the vertical offset is negated
+        // relative to the touch delta (y-down).
+        for origin in [CGPoint(x: dx, y: -dy),
+                       CGPoint(x: wrapX, y: -dy),
+                       CGPoint(x: dx, y: -wrapY),
+                       CGPoint(x: wrapX, y: -wrapY)] {
+            context.draw(cgImage, in: CGRect(origin: origin, size: size))
+        }
     }
     
     func archivedMove(deltaPoint: CGSize) {
