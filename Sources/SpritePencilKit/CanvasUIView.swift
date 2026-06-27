@@ -338,7 +338,11 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         }
     }
     @objc public func doRedoForAltGesture() {
-        if twoFingerUndoEnabled, drawnPointsAreCancelable() {
+        // Unlike undo, redo must NOT require `drawnPointsAreCancelable()`: that
+        // guard limits the quick tap-to-undo to small accidental strokes, but
+        // redo re-applies a previously undone action and has no "current stroke"
+        // to evaluate, so the guard would block legitimate redos.
+        if twoFingerUndoEnabled {
             doRedo()
         }
     }
