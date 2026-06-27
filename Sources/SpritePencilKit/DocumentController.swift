@@ -452,59 +452,80 @@ public class DocumentController {
         refresh()
     }
     
+    /// Crops away any fully-transparent border, shrinking the canvas to the
+    /// bounding box of the drawn pixels.
     public func trimCanvas() {
+        let width = context.width
+        let height = context.height
+
+        func hasContent(x: Int, y: Int) -> Bool {
+            getColorComponents(at: PixelPoint(x: x, y: y)).opacity != 0
+        }
+
         var top: Int?
-        findTop: for y in 0..<Int(context.height) {
-            for x in 0..<Int(context.width) {
-                let point = PixelPoint(x: x, y: y)
-                if getColorComponents(at: point).opacity != 0 {
-                    top = y
-                    break findTop
-                }
+        findTop: for y in 0..<height {
+            for x in 0..<width where hasContent(x: x, y: y) {
+                top = y
+                break findTop
             }
         }
-        guard top != nil else { return }
-        var bottom = 0
-        findBottom: for y in stride(from: Int(context.height), to: 0, by: -1) {
-            for x in 0..<Int(context.width) {
-                let point = PixelPoint(x: x, y: y)
-                if getColorComponents(at: point).opacity != 0 {
-                    bottom = y
-                    break findBottom
-                }
+        // A fully-transparent canvas has no content to trim around.
+        guard let top else { return }
+
+        // From here every scan stays inside [0, width) × [top, height), so the
+        // out-of-bounds reads of the old `stride(from: count, ...)` are avoided,
+        // and the inclusive `top...bottom` ranges no longer drop the edge rows.
+        var bottom = top
+        findBottom: for y in stride(from: height - 1, through: top, by: -1) {
+            for x in 0..<width where hasContent(x: x, y: y) {
+                bottom = y
+                break findBottom
             }
         }
         var left = 0
-        findLeft: for x in 0..<Int(context.width) {
-            for y in top!..<bottom {
-                let point = PixelPoint(x: x, y: y)
-                if getColorComponents(at: point).opacity != 0 {
-                    left = x
-                    break findLeft
-                }
+        findLeft: for x in 0..<width {
+            for y in top...bottom where hasContent(x: x, y: y) {
+                left = x
+                break findLeft
             }
         }
-        var right = 0
-        findRight: for x in stride(from: Int(context.width), to: 0, by: -1) {
-            for y in top!..<bottom {
-                let point = PixelPoint(x: x, y: y)
-                if getColorComponents(at: point).opacity != 0 {
-                    right = x
-                    break findRight
-                }
+        var right = width - 1
+        findRight: for x in stride(from: width - 1, through: left, by: -1) {
+            for y in top...bottom where hasContent(x: x, y: y) {
+                right = x
+                break findRight
             }
         }
-        let trimRect = CGRect(x: left, y: top!, width: right-left+1, height: bottom-top!+1)
-        
-        guard let image = context.makeImage()?.cropping(to: trimRect), let context = CGContext(data: nil, width: Int(trimRect.width), height: Int(trimRect.height), bitsPerComponent: image.bitsPerComponent, bytesPerRow: image.bytesPerRow, space: context.colorSpace!, bitmapInfo: image.alphaInfo.rawValue) else { return }
-        context.draw(image, in: CGRect(origin: .zero, size: trimRect.size))
-        self.context = context
+
+        let trimRect = CGRect(x: left, y: top, width: right - left + 1, height: bottom - top + 1)
+        // Content already fills the canvas; trimming would change nothing.
+        guard Int(trimRect.width) < width || Int(trimRect.height) < height else { return }
+
+        guard let image = context.makeImage()?.cropping(to: trimRect),
+              let newContext = CGContext(data: nil, width: Int(trimRect.width), height: Int(trimRect.height), bitsPerComponent: image.bitsPerComponent, bytesPerRow: image.bytesPerRow, space: context.colorSpace!, bitmapInfo: image.alphaInfo.rawValue) else { return }
+        newContext.draw(image, in: CGRect(origin: .zero, size: trimRect.size))
+
+        replaceContext(with: newContext)
+    }
+
+    /// Swaps in a context of a different size (trim/resize), refreshes the
+    /// canvas, and registers a symmetric undo that restores the previous context
+    /// (which in turn registers the redo). Unlike in-place edits, a resize can't
+    /// be undone by replaying the inverse operation, so we hold onto the old
+    /// context and swap it back.
+    private func replaceContext(with newContext: CGContext) {
+        let oldContext = context!
+        context = newContext
         refresh()
         canvasView.makeCheckerboard()
+        // The scroll view sizes its content from `spriteCopy`; keep it in sync
+        // with the new canvas size before fitting, or panning/centering use the
+        // stale dimensions.
+        zoomableView.spriteCopy = UIImage(cgImage: newContext.makeImage()!)
         zoomableView.zoomToFit()
-        undoManager?.registerUndo(withTarget: self, handler: { (target) in
-            //
-        })
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.replaceContext(with: oldContext)
+        }
     }
     
     public func export(scale: CGFloat, backgroundColor: UIColor? = nil) -> UIImage? {
