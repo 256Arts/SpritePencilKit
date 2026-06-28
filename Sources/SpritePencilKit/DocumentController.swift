@@ -341,29 +341,36 @@ public class DocumentController {
     }
     
     public func rotate(to direction: RotateDirection) {
-        let image = context.makeImage()!
-        context.saveGState()
-        context.clear()
-        
-        // FIX
-        let number: CGFloat = direction == .left ? 1.0 : -1.0
-        let tx = direction == .left ? 0.0 : CGFloat(context.width)
-        let ty = direction == .left ? CGFloat(context.height) : 0.0
-        context.translateBy(x: tx, y: ty)
-        context.scaleBy(x: number, y: -number)
-        context.translateBy(x: CGFloat(context.width)/2, y: CGFloat(context.height)/2)
-        context.rotate(by: .pi/2)
-        context.translateBy(x: CGFloat(-context.width)/2, y: CGFloat(-context.height)/2)
-        context.draw(image, in: CGRect(origin: .zero, size: CGSize(width: context.width, height: context.height)))
-        //
-        
-        context.restoreGState()
-        
-        undoManager?.registerUndo(withTarget: self) { (target) in
-            target.rotate(to: direction == .left ? .right : .left)
-            target.refresh()
+        let oldWidth = context.width
+        let oldHeight = context.height
+
+        // A 90° turn swaps the canvas dimensions, so we can't rotate in place:
+        // draw into a fresh height×width context instead. (For a square canvas
+        // the swap is a no-op and the result matches the previous behavior.)
+        guard let image = context.makeImage(),
+              let newContext = CGContext(data: nil, width: oldHeight, height: oldWidth, bitsPerComponent: image.bitsPerComponent, bytesPerRow: 0, space: context.colorSpace!, bitmapInfo: image.alphaInfo.rawValue) else { return }
+
+        let w = CGFloat(oldWidth)
+        let h = CGFloat(oldHeight)
+        // The leading translate/scale is the vertical (left) or horizontal
+        // (right) flip across the *new* canvas; the centered translates pivot the
+        // quarter-turn about each context's own center so rectangles stay framed.
+        switch direction {
+        case .left:
+            newContext.translateBy(x: 0, y: w)
+            newContext.scaleBy(x: 1, y: -1)
+        case .right:
+            newContext.translateBy(x: h, y: 0)
+            newContext.scaleBy(x: -1, y: 1)
         }
-        refresh()
+        newContext.translateBy(x: h / 2, y: w / 2)
+        newContext.rotate(by: .pi / 2)
+        newContext.translateBy(x: -w / 2, y: -h / 2)
+        newContext.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+        // replaceContext registers the undo (it swaps the prior context back) and
+        // resizes the canvas/zoom for the new dimensions.
+        replaceContext(with: newContext)
     }
     
     public func outline(colorComponents: ColorComponents? = nil) {
