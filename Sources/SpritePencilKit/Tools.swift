@@ -34,25 +34,38 @@ public enum BrushShape: String, CaseIterable, Equatable, Hashable {
 }
 
 public protocol Tool {
-
+    /// The brush footprint this tool paints with. Tools with no adjustable
+    /// width are a single pixel.
+    var size: PixelSize { get }
 }
 
-public struct PencilTool: Tool {
+public extension Tool {
+    var size: PixelSize { PixelSize(width: 1, height: 1) }
+}
+
+/// A tool whose brush width the user can adjust.
+public protocol SizableTool: Tool {
+    var width: Int { get set }
+    /// The largest width this tool supports.
+    var maxWidth: Int { get }
+}
+
+public extension SizableTool {
+    var size: PixelSize { PixelSize(width: width, height: width) }
+}
+
+public struct PencilTool: SizableTool {
     public var width: Int
-    public var size: PixelSize {
-        return PixelSize(width: width, height: width)
-    }
-    
+    public var maxWidth: Int { 10 }
+
     public init(width: Int) {
         self.width = width
     }
 }
-public struct EraserTool: Tool {
+public struct EraserTool: SizableTool {
     public var width: Int
-    public var size: PixelSize {
-        return PixelSize(width: width, height: width)
-    }
-    
+    public var maxWidth: Int { 10 }
+
     public init(width: Int) {
         self.width = width
     }
@@ -63,22 +76,18 @@ public struct FillTool: Tool {
 public struct MoveTool: Tool {
     public init() { }
 }
-public struct HighlightTool: Tool {
+public struct HighlightTool: SizableTool {
     public var width: Int
-    public var size: PixelSize {
-        return PixelSize(width: width, height: width)
-    }
-    
+    public var maxWidth: Int { 5 }
+
     public init(width: Int) {
         self.width = width
     }
 }
-public struct ShadowTool: Tool {
+public struct ShadowTool: SizableTool {
     public var width: Int
-    public var size: PixelSize {
-        return PixelSize(width: width, height: width)
-    }
-    
+    public var maxWidth: Int { 5 }
+
     public init(width: Int) {
         self.width = width
     }

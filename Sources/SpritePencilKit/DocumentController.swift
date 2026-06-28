@@ -67,24 +67,7 @@ public class DocumentController {
                 #endif
                 previousTool = oldValue
             }
-            switch tool {
-            case let pencil as PencilTool:
-                canvasView.toolSizeChanged(size: pencil.size)
-            case let eraser as EraserTool:
-                canvasView.toolSizeChanged(size: eraser.size)
-            case is FillTool:
-                canvasView.toolSizeChanged(size: PixelSize(width: 1, height: 1))
-            case is MoveTool:
-                canvasView.toolSizeChanged(size: PixelSize(width: 1, height: 1))
-            case let highlight as HighlightTool:
-                canvasView.toolSizeChanged(size: highlight.size)
-            case let shadow as ShadowTool:
-                canvasView.toolSizeChanged(size: shadow.size)
-            case is EyedroperTool:
-                canvasView.toolSizeChanged(size: PixelSize(width: 1, height: 1))
-            default:
-                canvasView.toolSizeChanged(size: PixelSize(width: 1, height: 1))
-            }
+            canvasView.toolSizeChanged(size: tool.size)
             eventPublisher.send(.selectTool(tool))
         }
     }
