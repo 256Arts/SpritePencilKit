@@ -123,6 +123,72 @@ struct DocumentControllerTests {
         _ = canvas
     }
 
+    @Test func flipVerticalMirrorsRows() {
+        // Non-square on purpose: a corner pixel must land in the opposite row,
+        // same column. (The old implementation redrew the image unchanged.)
+        let (controller, canvas) = makeController(width: 3, height: 2)
+        let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.flip(vertically: true)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 1)) == ink)
+
+        // Flipping again restores the original.
+        controller.flip(vertically: true)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
+        _ = canvas
+    }
+
+    @Test func flipHorizontalMirrorsColumns() {
+        let (controller, canvas) = makeController(width: 3, height: 2)
+        let ink = ColorComponents(red: 50, green: 200, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.flip(vertically: false)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 0)) == ink)
+
+        controller.flip(vertically: false)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
+        _ = canvas
+    }
+
+    @Test func fillDrawnPathFillsTheStrokedLoopInterior() {
+        // Stroke the perimeter of the (1,1)–(5,5) square in touch order, then
+        // fill: every interior pixel gets the tool color and joins the stroke's
+        // undo record; pixels outside the loop stay clear.
+        let (controller, canvas) = makeController(width: 8, height: 8)
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+        controller.toolColorComponents = ink
+
+        var ring = [PixelPoint]()
+        for x in 1...5 { ring.append(PixelPoint(x: x, y: 1)) }
+        for y in 2...5 { ring.append(PixelPoint(x: 5, y: y)) }
+        for x in stride(from: 4, through: 1, by: -1) { ring.append(PixelPoint(x: x, y: 5)) }
+        for y in stride(from: 4, through: 2, by: -1) { ring.append(PixelPoint(x: 1, y: y)) }
+        for point in ring {
+            controller.brushPaint(colorComponents: ink, at: point, size: PixelSize(width: 1, height: 1))
+        }
+        controller.currentOperationFirstPixelPoint = ring.first
+        controller.currentOperationLastPixelPoint = ring.last
+
+        controller.fillDrawnPath()
+
+        for x in 2...4 {
+            for y in 2...4 {
+                #expect(controller.getColorComponents(at: PixelPoint(x: x, y: y)) == ink)
+                // Recorded for undo alongside the stroke itself.
+                #expect(controller.currentOperationPixelPoints[PixelPoint(x: x, y: y)] == .clear)
+            }
+        }
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 6, y: 6)) == .clear)
+        _ = canvas
+    }
+
     @Test func matchingContextPreservesPixelFormat() {
         let context = makeSpriteContext(width: 3, height: 5)
         let rotated = context.makeMatchingContext(width: 5, height: 3)

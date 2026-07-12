@@ -160,10 +160,11 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         checkers.color1 = CIColor(color: checkerboardColor2)
         checkers.width = 1.0
         // TODO: Re-enable this for catalyst
-        // BUG: "checkers.outputImage" causes NSArray crash
+        // BUG: "checkers.outputImage" causes NSArray crash, so Catalyst gets a
+        // solid background instead of the generated checkerboard image.
         #if targetEnvironment(macCatalyst)
-        let image = CIImage()
-        checkerboardView.backgroundColor = checkerboardColor1
+        backgroundColor = checkerboardColor1
+        return
         #else
         guard let image = checkers.outputImage else { return }
         #endif
@@ -384,7 +385,8 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
             break
         case .began:
             guard let touch = gesture.currentTouches.first else { return }
-            
+            documentController.currentOperationOrderedPixelPoints.removeAll()
+
             switch touch.type {
             case .pencil:
                 applePencilUsed = true

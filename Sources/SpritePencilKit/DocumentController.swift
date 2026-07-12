@@ -36,6 +36,9 @@ public class DocumentController {
     public var palette: Palette?
     public var toolColorComponents = ColorComponents(red: 0, green: 0, blue: 0, opacity: 255)
     public var currentOperationPixelPoints = [PixelPoint: ColorComponents]()
+    /// The stroke's sample points in touch order — the dictionary above loses
+    /// ordering, which `fillDrawnPath()` needs to trace the drawn outline.
+    public var currentOperationOrderedPixelPoints = [PixelPoint]()
     public var currentOperationFirstPixelPoint: PixelPoint?
     public var currentOperationLastPixelPoint: PixelPoint?
     public var fillFromColorComponents: ColorComponents?
@@ -91,11 +94,13 @@ public class DocumentController {
     public func undo() {
         undoManager?.undo()
         currentOperationPixelPoints.removeAll()
+        currentOperationOrderedPixelPoints.removeAll()
         refresh()
     }
     public func redo() {
         undoManager?.redo()
         currentOperationPixelPoints.removeAll()
+        currentOperationOrderedPixelPoints.removeAll()
         refresh()
     }
     
@@ -127,8 +132,9 @@ public class DocumentController {
         })
         eventPublisher.send(.refreshUndo)
         currentOperationPixelPoints.removeAll()
+        currentOperationOrderedPixelPoints.removeAll()
     }
-    
+
     public func brushPaint(colorComponents: ColorComponents, at point: PixelPoint, size: PixelSize) {
         
         let pointInBounds: PixelPoint
@@ -145,6 +151,8 @@ public class DocumentController {
             sizeInBounds = PixelSize(width: newWidth, height: newHeight)
         }
         
+        currentOperationOrderedPixelPoints.append(pointInBounds)
+
         for xOffset in 0..<(sizeInBounds.width) {
             for yOffset in 0..<(sizeInBounds.height) {
                 let brushPoint = PixelPoint(x: pointInBounds.x + xOffset, y: pointInBounds.y + yOffset)
@@ -185,20 +193,35 @@ public class DocumentController {
     }
     
     public func fillDrawnPath() {
-        guard 7 <= currentOperationPixelPoints.count, let firstPoint = currentOperationFirstPixelPoint, let lastPoint = currentOperationLastPixelPoint else { return }
+        let points = currentOperationOrderedPixelPoints
+        guard 7 <= points.count, let firstPoint = currentOperationFirstPixelPoint, let lastPoint = currentOperationLastPixelPoint else { return }
         guard abs(firstPoint.x - lastPoint.x) <= 1, abs(firstPoint.y - lastPoint.y) <= 1 else { return }
-        let image = context.makeImage()!
-        context.beginPath()
-        context.move(to: CGPoint(x: CGFloat(firstPoint.x) + 0.5, y: CGFloat(firstPoint.y) + 0.5))
-        for pixelPoint in currentOperationPixelPoints.keys { // ISSUE: points are not in order in Set<>
-            context.addLine(to: CGPoint(x: CGFloat(pixelPoint.x) + 0.5, y: CGFloat(pixelPoint.y) + 0.5))
+
+        // Trace the stroke in touch order and fill its interior pixel-by-pixel
+        // through simplePaint, so the fill lands in currentOperationPixelPoints
+        // and is undone together with the stroke by the caller's archivedPaint.
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: CGFloat(firstPoint.x) + 0.5, y: CGFloat(firstPoint.y) + 0.5))
+        for point in points {
+            path.addLine(to: CGPoint(x: CGFloat(point.x) + 0.5, y: CGFloat(point.y) + 0.5))
         }
-        context.closePath()
-        context.fillPath()
-        undoManager?.registerUndo(withTarget: self, handler: { (target) in // POSSIBLE ISSUE: I dont think I should be registering undos here anymore
-            target.context.clear()
-            self.context.draw(image, in: CGRect(origin: .zero, size: CGSize(width: self.context.width, height: self.context.height)))
-        })
+        path.closeSubpath()
+
+        let box = path.boundingBox
+        let minX = max(0, Int(box.minX)), maxX = min(context.width - 1, Int(box.maxX))
+        let minY = max(0, Int(box.minY)), maxY = min(context.height - 1, Int(box.maxY))
+        guard minX <= maxX, minY <= maxY else { return }
+        for y in minY...maxY {
+            for x in minX...maxX {
+                let pixel = PixelPoint(x: x, y: y)
+                // Skip stroke pixels: repainting them would overwrite their
+                // recorded undo colors with the already-painted tool color.
+                guard !currentOperationPixelPoints.keys.contains(pixel) else { continue }
+                if path.contains(CGPoint(x: CGFloat(x) + 0.5, y: CGFloat(y) + 0.5)) {
+                    simplePaint(colorComponents: toolColorComponents, at: pixel)
+                }
+            }
+        }
     }
     
     public func eyedrop(at point: PixelPoint) {
@@ -304,36 +327,24 @@ public class DocumentController {
     }
     
     public func flip(vertically: Bool) {
-        let image = context.makeImage()!
+        guard let image = context.makeImage() else { return }
+        let width = CGFloat(context.width)
+        let height = CGFloat(context.height)
         context.clear()
         context.saveGState()
-        let number: CGFloat = vertically ? 1.0 : -1.0
-        
-        // FIX (1/2)
-        if !vertically {
-            let tx = vertically ? 0.0 : CGFloat(context.width)
-            let ty = vertically ? CGFloat(context.height) : 0.0
-            let flipVertical = CGAffineTransform(a: number, b: 0.0, c: 0.0, d: -number, tx: tx, ty: ty)
-            context.concatenate(flipVertical)
+        if vertically {
+            context.translateBy(x: 0, y: height)
+            context.scaleBy(x: 1, y: -1)
+        } else {
+            context.translateBy(x: width, y: 0)
+            context.scaleBy(x: -1, y: 1)
         }
-        //
-        
-        context.draw(image, in: CGRect(origin: .zero, size: CGSize(width: context.width, height: context.height)))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         context.restoreGState()
-        
-        // FIX (2/2)
-        if !vertically {
-            let image = context.makeImage()!
-            context.clear()
-            context.saveGState()
-            context.draw(image, in: CGRect(origin: .zero, size: CGSize(width: context.width, height: context.height)))
-            context.restoreGState()
-        }
-        //
-        
+
+        // Flipping again is its own inverse (and re-registers the redo).
         undoManager?.registerUndo(withTarget: self) { (target) in
             target.flip(vertically: vertically)
-            target.refresh()
         }
         refresh()
     }
@@ -421,13 +432,23 @@ public class DocumentController {
         let filter = CIFilter.colorPosterize()
         filter.inputImage = CIImage(cgImage: image)
         filter.levels = 4
-        let newImage = UIImage(ciImage: filter.outputImage!)
-        newImage.draw(at: .zero)
-        
-        undoManager?.registerUndo(withTarget: self, handler: { (target) in
-            UIImage(cgImage: image).draw(at: .zero)
-            target.refresh()
-        })
+        // UIImage.draw(at:) targets the current UIKit graphics context, which
+        // doesn't exist here, so it silently drew nothing (same bug class as
+        // the old move()). Render the filter output explicitly instead.
+        guard let output = filter.outputImage,
+              let posterized = CIContext(options: nil).createCGImage(output, from: CGRect(x: 0, y: 0, width: context.width, height: context.height)) else { return }
+        archivedDraw(posterized)
+    }
+
+    /// Replaces the canvas contents with `image` and registers the inverse,
+    /// giving whole-canvas edits (e.g. filters) symmetric undo/redo.
+    private func archivedDraw(_ image: CGImage) {
+        guard let previous = context.makeImage() else { return }
+        context.clear()
+        context.draw(image, in: CGRect(x: 0, y: 0, width: context.width, height: context.height))
+        undoManager?.registerUndo(withTarget: self) { (target) in
+            target.archivedDraw(previous)
+        }
         refresh()
     }
     
