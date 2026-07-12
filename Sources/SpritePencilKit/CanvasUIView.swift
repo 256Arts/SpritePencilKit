@@ -164,24 +164,23 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         // solid background instead of the generated checkerboard image.
         #if targetEnvironment(macCatalyst)
         backgroundColor = checkerboardColor1
-        return
         #else
         guard let image = checkers.outputImage else { return }
-        #endif
         guard let documentContext = documentController.context else { return }
-        
+
         let minimumCheckerboardPixelSize: CGFloat = 4.0
         let checkerboardPixelSize = safeAreaLayoutGuide.layoutFrame.width / (CGFloat(documentContext.width) * spriteZoomScale)
         if checkerboardPixelSize < minimumCheckerboardPixelSize {
             spriteZoomScale = 1.0
         }
-        
+
         let width = CGFloat(documentContext.width) * spriteZoomScale
         let height = CGFloat(documentContext.height) * spriteZoomScale
         let rect = CGRect(origin: .zero, size: CGSize(width: width, height: height))
         let ciContext = CIContext(options: nil)
         guard let cgImage = ciContext.createCGImage(image, from: rect) else { return }
         self.image = UIImage(cgImage: cgImage)
+        #endif
     }
     
     override public func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
