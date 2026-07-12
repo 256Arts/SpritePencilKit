@@ -115,16 +115,12 @@ public final class Palette: Equatable, Sendable {
         image.draw(at: .zero)
         guard let context = UIGraphicsGetCurrentContext() else { return nil }
         let contextDataManager = ContextDataManager(context: context)
-        let cdp = contextDataManager.dataPointer
         var colors = [ColorComponents]()
-        
+
         for x in 0..<context.width {
-            let point = PixelPoint(x: x, y: 0)
-            let offset = contextDataManager.dataOffset(for: point)
-            let colorComp = ColorComponents(red: cdp[offset+2], green: cdp[offset+1], blue: cdp[offset], opacity: cdp[offset+3])
-            colors.append(colorComp)
+            colors.append(contextDataManager[PixelPoint(x: x, y: 0)])
         }
-        
+
         self.colors = colors
         UIGraphicsEndImageContext()
     }

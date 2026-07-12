@@ -12,55 +12,81 @@ import CoreImage.CIFilterBuiltins
 
 @MainActor @Observable
 public class DocumentController {
-    
+
     public enum RotateDirection {
         case left, right
     }
-    
+
+    /// Everything the engine reports, on one bus (see `onEvent(_:)`).
     public enum Event {
-        case selectTool(Tool)
+        /// The canvas pixels changed (stroke sample, undo, filter, ...).
+        case drawingDidChange
+        /// The drawing context was swapped for another (load, rotate, trim, or
+        /// an undo of either) — everything sized from the canvas is stale.
+        case canvasReplaced
+        case toolChanged(Tool)
+        case symmetryChanged
         case eyedropColor(ColorComponents, point: PixelPoint)
-        case refreshUndo
         case usedColor(ColorComponents)
-        case hovered(PixelPoint?)
-        case painted(context: CGContext, color: UIColor?, point: PixelPoint)
+        case refreshUndo
+        case didBeginUsingTool
+        case didEndUsingTool
+        case showColorPalette
     }
-    
-    public var context: CGContext! {
+
+    // MARK: Canvas
+
+    /// The current canvas, re-rendered by `refresh()`. Views (or a future
+    /// SwiftUI/Metal renderer) observe this instead of being written to.
+    public private(set) var renderedImage: UIImage?
+
+    public private(set) var context: CGContext! {
         didSet {
             context.setAllowsAntialiasing(false)
             context.setShouldAntialias(false)
             contextDataManager = ContextDataManager(context: context)
         }
     }
+    @ObservationIgnored var contextDataManager: ContextDataManager!
+
+    // MARK: Drawing configuration
+
     public var palette: Palette?
     public var toolColorComponents = ColorComponents(red: 0, green: 0, blue: 0, opacity: 255)
-    public var currentOperationPixelPoints = [PixelPoint: ColorComponents]()
+    public var verticalSymmetry = false {
+        didSet { eventSubject.send(.symmetryChanged) }
+    }
+    public var horizontalSymmetry = false {
+        didSet { eventSubject.send(.symmetryChanged) }
+    }
+    public var checkeredDrawingMode = false
+    public var brushShape: BrushShape = .square {
+        didSet { eventSubject.send(.toolChanged(tool)) }
+    }
+    /// Closes and fills a pencil stroke that ends near its starting point.
+    public var shouldFillPaths = false
+    public var hoverPoint: PixelPoint?
+
+    // MARK: Stroke state
+
+    /// The pixels painted by the operation in progress, mapped to the colors
+    /// they had before it began (the operation's undo diff).
+    @ObservationIgnored var currentOperationPixelPoints = [PixelPoint: ColorComponents]()
     /// The stroke's sample points in touch order — the dictionary above loses
     /// ordering, which `fillDrawnPath()` needs to trace the drawn outline.
-    public var currentOperationOrderedPixelPoints = [PixelPoint]()
-    public var currentOperationFirstPixelPoint: PixelPoint?
-    public var currentOperationLastPixelPoint: PixelPoint?
-    public var fillFromColorComponents: ColorComponents?
-    public var contextDataManager: ContextDataManager!
-    public var verticalSymmetry = false
-    public var horizontalSymmetry = false
-    public var checkeredDrawingMode = false
-    public var brushShape: BrushShape = .square
-    public var hoverPoint: PixelPoint? {
-        didSet {
-            eventPublisher.send(.hovered(hoverPoint))
-        }
-    }
-    
-    // Tools
+    @ObservationIgnored var currentOperationOrderedPixelPoints = [PixelPoint]()
+    /// The canvas as it was when the current move drag began.
+    @ObservationIgnored private var moveBaseImage: CGImage?
+
+    // MARK: Tools
+
     public var pencilTool = PencilTool(width: 1)
     public var eraserTool = EraserTool(width: 1)
     public var fillTool = FillTool()
     public var moveTool = MoveTool()
     public var highlightTool = HighlightTool(width: 1)
     public var shadowTool = ShadowTool(width: 1)
-    public var eyedroperTool = EyedroperTool()
+    public var eyedropperTool = EyedropperTool()
     public var previousTool: Tool = EraserTool(width: 1)
     public var tool: Tool = PencilTool(width: 1) {
         didSet {
@@ -70,73 +96,135 @@ public class DocumentController {
                 #endif
                 previousTool = oldValue
             }
-            canvasView.toolSizeChanged(size: tool.size)
-            eventPublisher.send(.selectTool(tool))
+            eventSubject.send(.toolChanged(tool))
         }
     }
-    
-    // Delegates
-    weak public var undoManager: UndoManager?
-    weak public var zoomableView: ZoomableUIView!
-    weak public var canvasView: CanvasUIView!
-    public var eventPublisher: PassthroughSubject<Event, Never> = .init()
-    
+
+    // MARK: Undo & events
+
+    weak public var undoManager: UndoManager? {
+        didSet {
+            // Whole-context replacements (rotate/trim) retain full canvases;
+            // an unbounded stack would hold them all forever.
+            undoManager?.levelsOfUndo = 50
+        }
+    }
+    let eventSubject = PassthroughSubject<Event, Never>()
+
     public init() { }
-    
-    public func refresh() {
-        canvasView.events.send(.drawingDidChange)
-        let image = UIImage(cgImage: context.makeImage()!)
-        canvasView.spriteView.image = image
-        canvasView.events.send(.didFinishRendering)
-        eventPublisher.send(.refreshUndo)
-    }
-    
-    public func undo() {
-        undoManager?.undo()
-        currentOperationPixelPoints.removeAll()
-        currentOperationOrderedPixelPoints.removeAll()
-        refresh()
-    }
-    public func redo() {
-        undoManager?.redo()
-        currentOperationPixelPoints.removeAll()
-        currentOperationOrderedPixelPoints.removeAll()
-        refresh()
-    }
-    
-    func simplePaint(colorComponents: ColorComponents, at point: PixelPoint) {
-        let cdp = contextDataManager.dataPointer
-        let offset = contextDataManager.dataOffset(for: point)
-        
-        let undoRed = cdp[offset+2]
-        let undoGreen = cdp[offset+1]
-        let undoBlue = cdp[offset]
-        let undoOpacity = cdp[offset+3]
-        let undoColor = ColorComponents(red: undoRed, green: undoGreen, blue: undoBlue, opacity: undoOpacity)
-        currentOperationPixelPoints[point] = undoColor
-        
-        cdp[offset+2] = colorComponents.red
-        cdp[offset+1] = colorComponents.green
-        cdp[offset] = colorComponents.blue
-        cdp[offset+3] = colorComponents.opacity
-    }
-    
-    func archivedPaint(pixels: [PixelPoint: ColorComponents]) {
-        for (point, color) in pixels {
-            simplePaint(colorComponents: color, at: point)
+
+    /// Subscribes `handler` to engine events, which are always published on
+    /// the main actor. The subscription lives as long as the returned token.
+    public func onEvent(_ handler: @escaping @MainActor (Event) -> Void) -> AnyCancellable {
+        eventSubject.sink { event in
+            MainActor.assumeIsolated { handler(event) }
         }
-        
-        let copp = currentOperationPixelPoints
-        undoManager?.registerUndo(withTarget: self, handler: { (target) in
-            target.archivedPaint(pixels: copp)
-        })
-        eventPublisher.send(.refreshUndo)
+    }
+
+    /// Installs the initial canvas. No undo is registered: loading a document
+    /// is not an edit.
+    public func loadContext(_ newContext: CGContext) {
+        context = newContext
+        refresh()
+        eventSubject.send(.canvasReplaced)
+    }
+
+    /// Re-renders `renderedImage` from the context and announces the change.
+    public func refresh() {
+        guard let context, let image = context.makeImage() else { return }
+        renderedImage = UIImage(cgImage: image)
+        eventSubject.send(.drawingDidChange)
+        eventSubject.send(.refreshUndo)
+    }
+
+    // MARK: - Operation lifecycle
+
+    public func beginCurrentOperation() {
+        currentOperationOrderedPixelPoints.removeAll()
+        eventSubject.send(.didBeginUsingTool)
+    }
+
+    /// Registers one pixel-diff undo for everything painted since the
+    /// operation began, then clears the stroke state.
+    public func commitCurrentOperation() {
+        if shouldFillPaths, tool is PencilTool {
+            fillDrawnPath()
+        }
+        if !currentOperationPixelPoints.isEmpty {
+            let pixels = currentOperationPixelPoints
+            undoManager?.registerUndo(withTarget: self) { target in
+                target.archivedPaint(pixels: pixels)
+            }
+        }
+        clearCurrentOperation()
+        eventSubject.send(.refreshUndo)
+    }
+
+    /// Repaints the operation's pixels back to their previous colors (small
+    /// strokes only) and discards the stroke state.
+    public func cancelCurrentOperation() {
+        if currentOperationIsCancelable, !currentOperationPixelPoints.isEmpty {
+            for (point, previousColor) in currentOperationPixelPoints {
+                contextDataManager[point] = previousColor
+            }
+            refresh()
+        }
+        clearCurrentOperation()
+    }
+
+    public func endCurrentOperation() {
+        eventSubject.send(.didEndUsingTool)
+    }
+
+    /// Whether the operation in progress is small enough to quietly revert
+    /// (used to cancel accidental marks when a zoom/undo gesture wins).
+    public var currentOperationIsCancelable: Bool {
+        let toolSize = tool.size
+        return currentOperationPixelPoints.count <= 8 * (toolSize.width * toolSize.height)
+    }
+
+    private func clearCurrentOperation() {
         currentOperationPixelPoints.removeAll()
         currentOperationOrderedPixelPoints.removeAll()
     }
 
+    // MARK: - Undo
+
+    public func undo() {
+        undoManager?.undo()
+        clearCurrentOperation()
+        refresh()
+    }
+    public func redo() {
+        undoManager?.redo()
+        clearCurrentOperation()
+        refresh()
+    }
+
+    // MARK: - Painting
+
+    func simplePaint(colorComponents: ColorComponents, at point: PixelPoint) {
+        currentOperationPixelPoints[point] = contextDataManager[point]
+        contextDataManager[point] = colorComponents
+    }
+
+    /// Replays a pixel diff and registers its inverse — the single undo
+    /// currency for every in-place edit (strokes, fills, outline).
+    func archivedPaint(pixels: [PixelPoint: ColorComponents]) {
+        for (point, color) in pixels {
+            simplePaint(colorComponents: color, at: point)
+        }
+
+        let inversePixels = currentOperationPixelPoints
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.archivedPaint(pixels: inversePixels)
+        }
+        clearCurrentOperation()
+        eventSubject.send(.refreshUndo)
+    }
+
     public func brushPaint(colorComponents: ColorComponents, at point: PixelPoint, size: PixelSize) {
-        
+
         let pointInBounds: PixelPoint
         let sizeInBounds: PixelSize
         if size == PixelSize(width: 1, height: 1) {
@@ -150,7 +238,7 @@ public class DocumentController {
             let newHeight = min(size.height - (pointInBounds.y - point.y), (context.height - pointInBounds.y))
             sizeInBounds = PixelSize(width: newWidth, height: newHeight)
         }
-        
+
         currentOperationOrderedPixelPoints.append(pointInBounds)
 
         for xOffset in 0..<(sizeInBounds.width) {
@@ -185,21 +273,20 @@ public class DocumentController {
                 }
             }
         }
-        
+
         if 32 < colorComponents.opacity {
-            eventPublisher.send(.usedColor(colorComponents))
+            eventSubject.send(.usedColor(colorComponents))
         }
-        eventPublisher.send(.painted(context: context, color: UIColor(components: colorComponents), point: point))
     }
-    
-    public func fillDrawnPath() {
+
+    private func fillDrawnPath() {
         let points = currentOperationOrderedPixelPoints
-        guard 7 <= points.count, let firstPoint = currentOperationFirstPixelPoint, let lastPoint = currentOperationLastPixelPoint else { return }
+        guard 7 <= points.count, let firstPoint = points.first, let lastPoint = points.last else { return }
         guard abs(firstPoint.x - lastPoint.x) <= 1, abs(firstPoint.y - lastPoint.y) <= 1 else { return }
 
         // Trace the stroke in touch order and fill its interior pixel-by-pixel
         // through simplePaint, so the fill lands in currentOperationPixelPoints
-        // and is undone together with the stroke by the caller's archivedPaint.
+        // and is undone together with the stroke by commitCurrentOperation.
         let path = CGMutablePath()
         path.move(to: CGPoint(x: CGFloat(firstPoint.x) + 0.5, y: CGFloat(firstPoint.y) + 0.5))
         for point in points {
@@ -223,33 +310,36 @@ public class DocumentController {
             }
         }
     }
-    
+
     public func eyedrop(at point: PixelPoint) {
         let components = getColorComponents(at: point)
         guard components.opacity == 255 else { return }
-        
-        eventPublisher.send(.eyedropColor(components, point: point))
+
+        eventSubject.send(.eyedropColor(components, point: point))
     }
-    
+
     public func getColorComponents(at point: PixelPoint) -> ColorComponents {
-        let cdp = contextDataManager.dataPointer
-        let offset = contextDataManager.dataOffset(for: point)
-        return ColorComponents(red: cdp[offset+2], green: cdp[offset+1], blue: cdp[offset], opacity: cdp[offset+3])
+        contextDataManager[point]
     }
-    
-    public func move(deltaPoint: CGSize) {
-        // Blit the CGImage straight into the pixel buffer. UIImage.draw(at:) can't be
-        // used here: it targets the current UIKit graphics context, which no longer
-        // exists during a move after the canvas refactor, so it silently drew nothing
-        // and left the cleared (blank) context behind.
-        guard let cgImage = canvasView.spriteCopy.cgImage else { return }
+
+    // MARK: - Move
+
+    /// Snapshots the canvas; `continueMove(delta:)` offsets are relative to it.
+    public func beginMove() {
+        moveBaseImage = context.makeImage()
+    }
+
+    /// Blits the drag-start snapshot offset by `delta`, wrapping around the
+    /// canvas edges.
+    public func continueMove(delta: CGSize) {
+        guard let baseImage = moveBaseImage else { return }
         context.clear()
 
         let w = CGFloat(context.width)
         let h = CGFloat(context.height)
         let size = CGSize(width: w, height: h)
-        let dx = deltaPoint.width
-        let dy = deltaPoint.height
+        let dx = delta.width
+        let dy = delta.height
 
         // Second copy on each axis creates the seamless wrap-around while dragging.
         let wrapX = dx + (0 < dx ? -1 : 1) * w
@@ -261,19 +351,31 @@ public class DocumentController {
                        CGPoint(x: wrapX, y: -dy),
                        CGPoint(x: dx, y: -wrapY),
                        CGPoint(x: wrapX, y: -wrapY)] {
-            context.draw(cgImage, in: CGRect(origin: origin, size: size))
+            context.draw(baseImage, in: CGRect(origin: origin, size: size))
         }
     }
-    
+
+    public func commitMove(delta: CGSize) {
+        continueMove(delta: delta)
+        moveBaseImage = nil
+        undoManager?.registerUndo(withTarget: self) { target in
+            target.archivedMove(deltaPoint: CGSize(width: -delta.width, height: -delta.height))
+        }
+        refresh()
+    }
+
     func archivedMove(deltaPoint: CGSize) {
-        canvasView.spriteCopy = UIImage(cgImage: context.makeImage()!)
-        move(deltaPoint: deltaPoint)
-        
-        undoManager?.registerUndo(withTarget: self) { (target) in
+        beginMove()
+        continueMove(delta: deltaPoint)
+        moveBaseImage = nil
+
+        undoManager?.registerUndo(withTarget: self) { target in
             target.archivedMove(deltaPoint: CGSize(width: -deltaPoint.width, height: -deltaPoint.height))
         }
     }
-    
+
+    // MARK: - Shading
+
     public func highlight(at point: PixelPoint, size: PixelSize) {
         shade(at: point, size: size, using: (palette ?? Palette.sp16).highlight(forColorComponents:))
     }
@@ -295,37 +397,42 @@ public class DocumentController {
             }
         }
     }
-    
+
+    // MARK: - Fill
+
+    /// Flood-fills from `startPoint` and commits the result as one operation.
     public func fill(at startPoint: PixelPoint) {
-        fillFromColorComponents = getColorComponents(at: startPoint)
+        guard 0 <= startPoint.x, startPoint.x < context.width, 0 <= startPoint.y, startPoint.y < context.height else { return }
+        let fillFromColorComponents = getColorComponents(at: startPoint)
         guard fillFromColorComponents != toolColorComponents else { return }
-        
+
         let maxCheckedPixels = 2048
         var stack = [startPoint]
         var checkedPixels = 0
-        while checkedPixels < maxCheckedPixels {
-            guard let pixelPoint = stack.popLast() else { return }
+        while checkedPixels < maxCheckedPixels, let pixelPoint = stack.popLast() {
             if currentOperationPixelPoints.keys.contains(pixelPoint) || (pixelPoint.y < 0 || pixelPoint.y > context.height - 1 || pixelPoint.x < 0 || pixelPoint.x > context.width - 1) {
                 continue
             }
             guard getColorComponents(at: pixelPoint) == fillFromColorComponents else { continue }
-            
+
             simplePaint(colorComponents: toolColorComponents, at: pixelPoint)
-            currentOperationPixelPoints[pixelPoint] = fillFromColorComponents
-            
+
             stack += [
                 PixelPoint(x: pixelPoint.x+1, y: pixelPoint.y),
                 PixelPoint(x: pixelPoint.x-1, y: pixelPoint.y),
                 PixelPoint(x: pixelPoint.x, y: pixelPoint.y+1),
                 PixelPoint(x: pixelPoint.x, y: pixelPoint.y-1)
             ]
-            
+
             checkedPixels += 1
         }
-        
-//        refresh() // Not working
+
+        commitCurrentOperation()
+        refresh()
     }
-    
+
+    // MARK: - Whole-canvas edits
+
     public func flip(vertically: Bool) {
         guard let image = context.makeImage() else { return }
         let width = CGFloat(context.width)
@@ -348,7 +455,7 @@ public class DocumentController {
         }
         refresh()
     }
-    
+
     public func rotate(to direction: RotateDirection) {
         let oldWidth = context.width
         let oldHeight = context.height
@@ -377,11 +484,11 @@ public class DocumentController {
         newContext.translateBy(x: -w / 2, y: -h / 2)
         newContext.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
 
-        // replaceContext registers the undo (it swaps the prior context back) and
-        // resizes the canvas/zoom for the new dimensions.
+        // replaceContext registers the undo (it swaps the prior context back)
+        // and announces the size change.
         replaceContext(with: newContext)
     }
-    
+
     public func outline(colorComponents: ColorComponents? = nil) {
         var outline = [(point: PixelPoint, neighborColorComponents: ColorComponents)]()
         for y in 0..<context.height {
@@ -404,29 +511,16 @@ public class DocumentController {
                 }
             }
         }
-        undoManager?.beginUndoGrouping()
-        if let colorComponents = colorComponents {
-            for point in outline {
-                undoManager?.registerUndo(withTarget: self, handler: { (target) in
-                    target.simplePaint(colorComponents: .clear, at: point.point)
-                })
-                simplePaint(colorComponents: colorComponents, at: point.point)
-            }
-        } else {
-            // Automatic color
-            for point in outline {
-                let shadowColor = (palette ?? Palette.sp16).shadow(forColorComponents: point.neighborColorComponents)
-                undoManager?.registerUndo(withTarget: self, handler: { (target) in
-                    target.simplePaint(colorComponents: .clear, at: point.point)
-                })
-                simplePaint(colorComponents: shadowColor, at: point.point)
-            }
+        // Paint through simplePaint so the whole outline becomes one pixel-diff
+        // undo step (no undo grouping needed).
+        for (point, neighborColorComponents) in outline {
+            let color = colorComponents ?? (palette ?? Palette.sp16).shadow(forColorComponents: neighborColorComponents)
+            simplePaint(colorComponents: color, at: point)
         }
-        undoManager?.endUndoGrouping()
-        currentOperationPixelPoints.removeAll()
+        commitCurrentOperation()
         refresh()
     }
-    
+
     public func posterize() {
         guard let image = context.makeImage() else { return }
         let filter = CIFilter.colorPosterize()
@@ -451,7 +545,7 @@ public class DocumentController {
         }
         refresh()
     }
-    
+
     /// Crops away any fully-transparent border, shrinking the canvas to the
     /// bounding box of the drawn pixels.
     public func trimCanvas() {
@@ -508,31 +602,26 @@ public class DocumentController {
         replaceContext(with: newContext)
     }
 
-    /// Swaps in a context of a different size (trim/resize), refreshes the
-    /// canvas, and registers a symmetric undo that restores the previous context
-    /// (which in turn registers the redo). Unlike in-place edits, a resize can't
-    /// be undone by replaying the inverse operation, so we hold onto the old
-    /// context and swap it back.
+    /// Swaps in a context of a different size (trim/rotate), announces the
+    /// change, and registers a symmetric undo that restores the previous
+    /// context (which in turn registers the redo). Unlike in-place edits, a
+    /// resize can't be undone by replaying an inverse diff, so we hold onto
+    /// the old context and swap it back.
     private func replaceContext(with newContext: CGContext) {
         let oldContext = context!
         context = newContext
         refresh()
-        canvasView.makeCheckerboard()
-        // The scroll view sizes its content from `spriteCopy`; keep it in sync
-        // with the new canvas size before fitting, or panning/centering use the
-        // stale dimensions.
-        zoomableView.spriteCopy = UIImage(cgImage: newContext.makeImage()!)
-        zoomableView.zoomToFit()
+        eventSubject.send(.canvasReplaced)
         undoManager?.registerUndo(withTarget: self) { target in
             target.replaceContext(with: oldContext)
         }
     }
-    
+
     public func export(scale: CGFloat, backgroundColor: UIColor? = nil) -> UIImage? {
         guard let cgImage = context.makeImage() else { return nil }
         let image = UIImage(cgImage: cgImage)
         if scale == 1.0, backgroundColor == nil { return image }
-        
+
         let scaledImageSize = image.size.applying(CGAffineTransform(scaleX: scale, y: scale))
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
@@ -548,5 +637,5 @@ public class DocumentController {
         }
         return scaledImage
     }
-    
+
 }

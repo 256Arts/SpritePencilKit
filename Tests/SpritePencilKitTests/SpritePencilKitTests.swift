@@ -2,9 +2,10 @@
 //  SpritePencilKitTests.swift
 //  Sprite Pencil
 //
-//  Regression coverage for the 1.6.2 correctness fixes: edge-of-canvas reads,
-//  the ColorComponents Hashable contract, buffer offset math, and pixel-format
-//  preservation across context recreation.
+//  Regression coverage for the 1.6.2 correctness fixes (edge-of-canvas reads,
+//  the ColorComponents Hashable contract, buffer offset math, pixel-format
+//  preservation) and the 2.0 controller-owned operation lifecycle
+//  (commit/cancel/undo/redo without any views attached).
 //
 
 import Testing
@@ -24,14 +25,13 @@ private func makeSpriteContext(width: Int, height: Int) -> CGContext {
         bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
 }
 
+/// Since 2.0, the controller renders to `renderedImage` and publishes events —
+/// no views are required to exercise any of it.
 @MainActor
-private func makeController(width: Int, height: Int) -> (DocumentController, CanvasUIView) {
+private func makeController(width: Int, height: Int) -> DocumentController {
     let controller = DocumentController()
-    controller.context = makeSpriteContext(width: width, height: height)
-    // canvasView is weak, so the canvas must stay alive for the test's duration.
-    let canvas = CanvasUIView(documentController: controller)
-    controller.canvasView = canvas
-    return (controller, canvas)
+    controller.loadContext(makeSpriteContext(width: width, height: height))
+    return controller
 }
 
 struct ColorComponentsTests {
@@ -76,18 +76,17 @@ struct DocumentControllerTests {
     @Test func paintRoundTripsThroughPaddedRows() {
         // Width 3 → 12 content bytes per row, which CG typically pads; the
         // offset math must use bytesPerRow, not width.
-        let (controller, canvas) = makeController(width: 3, height: 3)
+        let controller = makeController(width: 3, height: 3)
         let color = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
         controller.simplePaint(colorComponents: color, at: PixelPoint(x: 2, y: 1))
         #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 1)) == color)
         #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == .clear)
-        _ = canvas
     }
 
     @Test func outlineStopsAtCanvasEdges() {
         // A single colored pixel in the corner of a 2×2 canvas: outlining must
         // not read past the edges, and must outline exactly its two neighbors.
-        let (controller, canvas) = makeController(width: 2, height: 2)
+        let controller = makeController(width: 2, height: 2)
         let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
         controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
         controller.currentOperationPixelPoints.removeAll()
@@ -99,13 +98,31 @@ struct DocumentControllerTests {
         #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 1)).opacity == 255)
         // Not adjacent to the ink at collection time — stays clear.
         #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == .clear)
-        _ = canvas
+    }
+
+    @Test func outlineUndoesAsOneStep() {
+        // The outline is committed as a single pixel-diff: one undo() must
+        // clear every outline pixel (no per-pixel undo grouping anymore).
+        let controller = makeController(width: 3, height: 3)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 1, y: 1))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.outline(colorComponents: ColorComponents(red: 0, green: 0, blue: 0, opacity: 255))
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 1)).opacity == 255)
+
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 1)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == ink)
     }
 
     @Test func shadeToolsSkipOutOfBoundsCellsOfTheBrush() {
         // A 3×3 highlight/shadow stamp whose footprint hangs off every edge of
         // a 2×2 canvas: out-of-bounds cells must be skipped, in-bounds painted.
-        let (controller, canvas) = makeController(width: 2, height: 2)
+        let controller = makeController(width: 2, height: 2)
         let ink = ColorComponents(red: 120, green: 120, blue: 120, opacity: 255)
         for x in 0..<2 {
             for y in 0..<2 {
@@ -120,13 +137,12 @@ struct DocumentControllerTests {
         controller.currentOperationPixelPoints.removeAll()
         controller.shadow(at: PixelPoint(x: 1, y: 1), size: PixelSize(width: 3, height: 3))
         #expect(Set(controller.currentOperationPixelPoints.keys) == [PixelPoint(x: 1, y: 1)])
-        _ = canvas
     }
 
     @Test func flipVerticalMirrorsRows() {
         // Non-square on purpose: a corner pixel must land in the opposite row,
         // same column. (The old implementation redrew the image unchanged.)
-        let (controller, canvas) = makeController(width: 3, height: 2)
+        let controller = makeController(width: 3, height: 2)
         let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
         controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
         controller.currentOperationPixelPoints.removeAll()
@@ -138,11 +154,10 @@ struct DocumentControllerTests {
         // Flipping again restores the original.
         controller.flip(vertically: true)
         #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
-        _ = canvas
     }
 
     @Test func flipHorizontalMirrorsColumns() {
-        let (controller, canvas) = makeController(width: 3, height: 2)
+        let controller = makeController(width: 3, height: 2)
         let ink = ColorComponents(red: 50, green: 200, blue: 50, opacity: 255)
         controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
         controller.currentOperationPixelPoints.removeAll()
@@ -153,40 +168,6 @@ struct DocumentControllerTests {
 
         controller.flip(vertically: false)
         #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
-        _ = canvas
-    }
-
-    @Test func fillDrawnPathFillsTheStrokedLoopInterior() {
-        // Stroke the perimeter of the (1,1)–(5,5) square in touch order, then
-        // fill: every interior pixel gets the tool color and joins the stroke's
-        // undo record; pixels outside the loop stay clear.
-        let (controller, canvas) = makeController(width: 8, height: 8)
-        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
-        controller.toolColorComponents = ink
-
-        var ring = [PixelPoint]()
-        for x in 1...5 { ring.append(PixelPoint(x: x, y: 1)) }
-        for y in 2...5 { ring.append(PixelPoint(x: 5, y: y)) }
-        for x in stride(from: 4, through: 1, by: -1) { ring.append(PixelPoint(x: x, y: 5)) }
-        for y in stride(from: 4, through: 2, by: -1) { ring.append(PixelPoint(x: 1, y: y)) }
-        for point in ring {
-            controller.brushPaint(colorComponents: ink, at: point, size: PixelSize(width: 1, height: 1))
-        }
-        controller.currentOperationFirstPixelPoint = ring.first
-        controller.currentOperationLastPixelPoint = ring.last
-
-        controller.fillDrawnPath()
-
-        for x in 2...4 {
-            for y in 2...4 {
-                #expect(controller.getColorComponents(at: PixelPoint(x: x, y: y)) == ink)
-                // Recorded for undo alongside the stroke itself.
-                #expect(controller.currentOperationPixelPoints[PixelPoint(x: x, y: y)] == .clear)
-            }
-        }
-        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
-        #expect(controller.getColorComponents(at: PixelPoint(x: 6, y: 6)) == .clear)
-        _ = canvas
     }
 
     @Test func matchingContextPreservesPixelFormat() {
@@ -198,5 +179,152 @@ struct DocumentControllerTests {
         #expect(rotated?.colorSpace?.name == context.colorSpace?.name)
         #expect(rotated?.width == 5)
         #expect(rotated?.height == 3)
+    }
+}
+
+@MainActor
+struct OperationLifecycleTests {
+
+    @Test func strokeCommitRegistersOneUndoableDiff() {
+        let controller = makeController(width: 4, height: 4)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+
+        controller.beginCurrentOperation()
+        controller.brushPaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0), size: PixelSize(width: 1, height: 1))
+        controller.brushPaint(colorComponents: ink, at: PixelPoint(x: 1, y: 0), size: PixelSize(width: 1, height: 1))
+        controller.commitCurrentOperation()
+
+        #expect(controller.currentOperationPixelPoints.isEmpty)
+        #expect(undoManager.canUndo)
+
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == .clear)
+
+        controller.redo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == ink)
+    }
+
+    @Test func emptyCommitRegistersNoUndo() {
+        let controller = makeController(width: 4, height: 4)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+
+        controller.beginCurrentOperation()
+        controller.commitCurrentOperation()
+        #expect(!undoManager.canUndo)
+    }
+
+    @Test func cancelRestoresTheCanceledStroke() {
+        let controller = makeController(width: 4, height: 4)
+        let under = ColorComponents(red: 5, green: 5, blue: 5, opacity: 255)
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+        controller.simplePaint(colorComponents: under, at: PixelPoint(x: 1, y: 1))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.beginCurrentOperation()
+        controller.brushPaint(colorComponents: ink, at: PixelPoint(x: 1, y: 1), size: PixelSize(width: 1, height: 1))
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == ink)
+
+        controller.cancelCurrentOperation()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == under)
+        #expect(controller.currentOperationPixelPoints.isEmpty)
+    }
+
+    @Test func fillCommitsItselfAndUndoes() {
+        let controller = makeController(width: 3, height: 3)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+        controller.toolColorComponents = ink
+
+        controller.fill(at: PixelPoint(x: 1, y: 1))
+        for x in 0..<3 {
+            for y in 0..<3 {
+                #expect(controller.getColorComponents(at: PixelPoint(x: x, y: y)) == ink)
+            }
+        }
+
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == .clear)
+    }
+
+    @Test func pencilCommitFillsClosedLoopInterior() {
+        // Stroke the perimeter of the (1,1)–(5,5) square in touch order; with
+        // shouldFillPaths on, committing fills the interior as part of the
+        // same undoable operation.
+        let controller = makeController(width: 8, height: 8)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        controller.shouldFillPaths = true
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+        controller.toolColorComponents = ink
+
+        var ring = [PixelPoint]()
+        for x in 1...5 { ring.append(PixelPoint(x: x, y: 1)) }
+        for y in 2...5 { ring.append(PixelPoint(x: 5, y: y)) }
+        for x in stride(from: 4, through: 1, by: -1) { ring.append(PixelPoint(x: x, y: 5)) }
+        for y in stride(from: 4, through: 2, by: -1) { ring.append(PixelPoint(x: 1, y: y)) }
+
+        controller.beginCurrentOperation()
+        for point in ring {
+            controller.brushPaint(colorComponents: ink, at: point, size: PixelSize(width: 1, height: 1))
+        }
+        controller.commitCurrentOperation()
+
+        for x in 2...4 {
+            for y in 2...4 {
+                #expect(controller.getColorComponents(at: PixelPoint(x: x, y: y)) == ink)
+            }
+        }
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 6, y: 6)) == .clear)
+
+        // Stroke and fill undo together.
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 3, y: 3)) == .clear)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == .clear)
+    }
+
+    @Test func moveCommitWrapsAndUndoes() {
+        let controller = makeController(width: 4, height: 4)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.beginMove()
+        controller.continueMove(delta: CGSize(width: 1, height: 0))
+        controller.commitMove(delta: CGSize(width: 2, height: 1))
+
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 1)) == ink)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 1)) == .clear)
+    }
+
+    @Test func trimCanvasUndoRestoresTheOriginalContext() {
+        let controller = makeController(width: 4, height: 4)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let ink = ColorComponents(red: 10, green: 20, blue: 30, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 1, y: 2))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.trimCanvas()
+        #expect(controller.context.width == 1)
+        #expect(controller.context.height == 1)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
+
+        controller.undo()
+        #expect(controller.context.width == 4)
+        #expect(controller.context.height == 4)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 2)) == ink)
     }
 }

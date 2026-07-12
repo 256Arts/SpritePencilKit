@@ -17,14 +17,15 @@ public struct ZoomableCanvasView: UIViewRepresentable {
     public var pixelGridColor: UIColor
     public var twoFingerUndoEnabled: Bool
     public var applePencilCanEyedrop: Bool
-    public var nonDrawingFingerAction: CanvasUIView.FingerAction
+    public var nonDrawingFingerAction: FingerAction
     public var shouldFillPaths: Bool
     public var shouldRecognizeGesturesSimultaneously: Bool
-    
-    // Called when `CanvasUIView` emits events
-    public var onEvent: ((CanvasViewEvent) -> Void)?
 
-    // Optional additional configuration hook run after `setupView()`
+    // Called when the engine emits events
+    public var onEvent: ((DocumentController.Event) -> Void)?
+
+    // Optional additional configuration hook run before `setupView()` — the
+    // place to load the drawing context into the controller.
     public var configure: ((ZoomableUIView) -> Void)?
 
     public init(
@@ -38,10 +39,10 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         pixelGridColor: UIColor = .systemGray3,
         twoFingerUndoEnabled: Bool = true,
         applePencilCanEyedrop: Bool = true,
-        nonDrawingFingerAction: CanvasUIView.FingerAction = .ignore,
+        nonDrawingFingerAction: FingerAction = .ignore,
         shouldFillPaths: Bool = false,
         shouldRecognizeGesturesSimultaneously: Bool = true,
-        onEvent: ((CanvasViewEvent) -> Void)? = nil,
+        onEvent: ((DocumentController.Event) -> Void)? = nil,
         configure: ((ZoomableUIView) -> Void)? = nil
     ) {
         self.documentController = documentController
@@ -68,7 +69,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
             contentView: canvasView,
             documentController: documentController
         )
-        context.coordinator.bind(to: canvasView, onEvent: onEvent)
+        context.coordinator.bind(to: documentController, onEvent: onEvent)
         configure?(zoomableView)
         applyConfig(to: zoomableView)
         zoomableView.setupView()
@@ -89,45 +90,53 @@ public struct ZoomableCanvasView: UIViewRepresentable {
     // MARK: - Helpers
     private func applyConfig(to view: ZoomableUIView) {
         let canvasView = view.contentView
-        
+
         // Simple property passthroughs
         view.zoomEnabled = zoomEnabled
-        canvasView.pixelGridEnabled = pixelGridEnabled
-        canvasView.tileGridEnabled = tileGridEnabled
-        canvasView.checkerboardColor1 = checkerboardColor1
-        canvasView.checkerboardColor2 = checkerboardColor2
-        canvasView.tileGridColor = tileGridColor
-        canvasView.pixelGridColor = pixelGridColor
         canvasView.twoFingerUndoEnabled = twoFingerUndoEnabled
         canvasView.applePencilCanEyedrop = applePencilCanEyedrop
         canvasView.nonDrawingFingerAction = nonDrawingFingerAction
-        canvasView.shouldFillPaths = shouldFillPaths
         canvasView.shouldRecognizeGesturesSimultaneously = shouldRecognizeGesturesSimultaneously
+        // Diffed: this runs during SwiftUI view updates, and writing observable
+        // controller state mid-update would invalidate views for no change.
+        if documentController.shouldFillPaths != shouldFillPaths {
+            documentController.shouldFillPaths = shouldFillPaths
+        }
 
-        // Refresh any visuals that depend on these values
-        canvasView.makeCheckerboard()
-        canvasView.refreshGrid()
+        // Only rebuild visuals whose inputs actually changed — SwiftUI calls
+        // updateUIView often, and makeCheckerboard renders through a CIContext.
+        if canvasView.checkerboardColor1 != checkerboardColor1 || canvasView.checkerboardColor2 != checkerboardColor2 {
+            canvasView.checkerboardColor1 = checkerboardColor1
+            canvasView.checkerboardColor2 = checkerboardColor2
+            canvasView.makeCheckerboard()
+        }
+        if canvasView.pixelGridEnabled != pixelGridEnabled || canvasView.tileGridEnabled != tileGridEnabled
+            || canvasView.pixelGridColor != pixelGridColor || canvasView.tileGridColor != tileGridColor {
+            canvasView.pixelGridEnabled = pixelGridEnabled
+            canvasView.tileGridEnabled = tileGridEnabled
+            canvasView.pixelGridColor = pixelGridColor
+            canvasView.tileGridColor = tileGridColor
+            if documentController.context != nil {
+                canvasView.refreshGrid()
+            }
+        }
     }
 
     // MARK: - Coordinator
     public final class Coordinator {
         private var cancellable: AnyCancellable?
-        private var onEvent: ((CanvasViewEvent) -> Void)?
+        private var onEvent: ((DocumentController.Event) -> Void)?
 
-        fileprivate func bind(to view: CanvasUIView, onEvent: ((CanvasViewEvent) -> Void)?) {
+        @MainActor fileprivate func bind(to documentController: DocumentController, onEvent: ((DocumentController.Event) -> Void)?) {
             self.onEvent = onEvent
-            // Subscribe to CanvasView events and forward to SwiftUI
-            cancellable = view.events.sink { [weak self] event in
+            // Subscribe to engine events and forward to SwiftUI
+            cancellable = documentController.onEvent { [weak self] event in
                 self?.onEvent?(event)
             }
         }
 
-        fileprivate func updateOnEvent(_ onEvent: ((CanvasViewEvent) -> Void)?) {
+        fileprivate func updateOnEvent(_ onEvent: ((DocumentController.Event) -> Void)?) {
             self.onEvent = onEvent
-        }
-
-        deinit {
-            cancellable?.cancel()
         }
     }
 }

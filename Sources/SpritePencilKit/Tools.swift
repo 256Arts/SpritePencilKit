@@ -33,14 +33,23 @@ public enum BrushShape: String, CaseIterable, Equatable, Hashable {
     }
 }
 
+/// A drawing tool. Continuous tools apply themselves to the canvas as the
+/// touch moves; the others act once, where the touch ends (fill, eyedropper)
+/// or across the whole gesture (move).
 public protocol Tool {
     /// The brush footprint this tool paints with. Tools with no adjustable
     /// width are a single pixel.
     var size: PixelSize { get }
+    /// Whether the tool acts on every touch sample as the finger moves.
+    var isContinuous: Bool { get }
+    /// Applies the tool at `point` (the top-left pixel of the brush footprint).
+    @MainActor func apply(at point: PixelPoint, controller: DocumentController)
 }
 
 public extension Tool {
     var size: PixelSize { PixelSize(width: 1, height: 1) }
+    var isContinuous: Bool { false }
+    @MainActor func apply(at point: PixelPoint, controller: DocumentController) { }
 }
 
 /// A tool whose brush width the user can adjust.
@@ -57,41 +66,65 @@ public extension SizableTool {
 public struct PencilTool: SizableTool {
     public var width: Int
     public var maxWidth: Int { 10 }
+    public var isContinuous: Bool { true }
 
     public init(width: Int) {
         self.width = width
+    }
+
+    @MainActor public func apply(at point: PixelPoint, controller: DocumentController) {
+        controller.brushPaint(colorComponents: controller.toolColorComponents, at: point, size: size)
     }
 }
 public struct EraserTool: SizableTool {
     public var width: Int
     public var maxWidth: Int { 10 }
+    public var isContinuous: Bool { true }
 
     public init(width: Int) {
         self.width = width
+    }
+
+    @MainActor public func apply(at point: PixelPoint, controller: DocumentController) {
+        controller.brushPaint(colorComponents: .clear, at: point, size: size)
     }
 }
 public struct FillTool: Tool {
     public init() { }
 }
 public struct MoveTool: Tool {
+    // Continuous, but driven by the drag delta rather than per-point
+    // application — see DocumentController.beginMove/continueMove/commitMove.
+    public var isContinuous: Bool { true }
+
     public init() { }
 }
 public struct HighlightTool: SizableTool {
     public var width: Int
     public var maxWidth: Int { 5 }
+    public var isContinuous: Bool { true }
 
     public init(width: Int) {
         self.width = width
+    }
+
+    @MainActor public func apply(at point: PixelPoint, controller: DocumentController) {
+        controller.highlight(at: point, size: size)
     }
 }
 public struct ShadowTool: SizableTool {
     public var width: Int
     public var maxWidth: Int { 5 }
+    public var isContinuous: Bool { true }
 
     public init(width: Int) {
         self.width = width
     }
+
+    @MainActor public func apply(at point: PixelPoint, controller: DocumentController) {
+        controller.shadow(at: point, size: size)
+    }
 }
-public struct EyedroperTool: Tool {
+public struct EyedropperTool: Tool {
     public init() { }
 }
