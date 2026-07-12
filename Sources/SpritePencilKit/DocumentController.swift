@@ -468,19 +468,14 @@ public class DocumentController {
 
         let w = CGFloat(oldWidth)
         let h = CGFloat(oldHeight)
-        // The leading translate/scale is the vertical (left) or horizontal
-        // (right) flip across the *new* canvas; the centered translates pivot the
-        // quarter-turn about each context's own center so rectangles stay framed.
-        switch direction {
-        case .left:
-            newContext.translateBy(x: 0, y: w)
-            newContext.scaleBy(x: 1, y: -1)
-        case .right:
-            newContext.translateBy(x: h, y: 0)
-            newContext.scaleBy(x: -1, y: 1)
-        }
+        // Pivot a pure quarter-turn about the shared center of the old (w×h)
+        // image and the new (h×w) canvas: translate to the new canvas's center,
+        // rotate, then translate back by the old image's center. Right turns
+        // clockwise, left counter-clockwise. (The earlier implementation added a
+        // leading axis flip, which composed with the turn into a *reflection* —
+        // two Rights were a no-op instead of a 180° turn.)
         newContext.translateBy(x: h / 2, y: w / 2)
-        newContext.rotate(by: .pi / 2)
+        newContext.rotate(by: direction == .right ? -.pi / 2 : .pi / 2)
         newContext.translateBy(x: -w / 2, y: -h / 2)
         newContext.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
 

@@ -329,6 +329,214 @@ struct OperationLifecycleTests {
     }
 }
 
+struct BrushShapeTests {
+
+    @Test func squareIncludesEveryCell() {
+        // Square fills its whole footprint at any diameter — including the
+        // corners a circle would drop.
+        for diameter in 1...9 {
+            for row in 0..<diameter {
+                for column in 0..<diameter {
+                    #expect(BrushShape.square.includes(column: column, row: row, diameter: diameter))
+                }
+            }
+        }
+    }
+
+    @Test func tinyCircleIsASolidBlock() {
+        // 1px and 2px round brushes have no meaningful curve — every cell is in.
+        for diameter in 1...2 {
+            for row in 0..<diameter {
+                for column in 0..<diameter {
+                    #expect(BrushShape.circle.includes(column: column, row: row, diameter: diameter))
+                }
+            }
+        }
+    }
+
+    @Test func smallestRoundBrushIsAPlus() {
+        // The 3px circle is tightened by half a pixel so it renders as a plus:
+        // the four edge-midpoints and center are in, the four corners are out.
+        let inside = [(1, 0), (0, 1), (1, 1), (2, 1), (1, 2)]
+        let outside = [(0, 0), (2, 0), (0, 2), (2, 2)]
+        for (column, row) in inside {
+            #expect(BrushShape.circle.includes(column: column, row: row, diameter: 3))
+        }
+        for (column, row) in outside {
+            #expect(!BrushShape.circle.includes(column: column, row: row, diameter: 3))
+        }
+    }
+
+    @Test func largerCircleClipsOnlyTheCorners() {
+        // A 5px circle keeps the near-corner cells but drops the four true
+        // corners, matching a round mask.
+        #expect(!BrushShape.circle.includes(column: 0, row: 0, diameter: 5))
+        #expect(!BrushShape.circle.includes(column: 4, row: 4, diameter: 5))
+        #expect(BrushShape.circle.includes(column: 0, row: 1, diameter: 5))
+        #expect(BrushShape.circle.includes(column: 2, row: 0, diameter: 5))
+        #expect(BrushShape.circle.includes(column: 2, row: 2, diameter: 5)) // center
+    }
+}
+
+@MainActor
+struct RotateTests {
+
+    /// The count of fully-opaque pixels in the canvas — a rotation must neither
+    /// lose nor duplicate ink (the 1.6.1 bug clipped pixels off a non-square
+    /// canvas by rotating without swapping dimensions).
+    private func opaquePixelCount(_ controller: DocumentController) -> Int {
+        var count = 0
+        for y in 0..<controller.context.height {
+            for x in 0..<controller.context.width {
+                if controller.getColorComponents(at: PixelPoint(x: x, y: y)).opacity == 255 { count += 1 }
+            }
+        }
+        return count
+    }
+
+    @Test func rotatingNonSquareSwapsDimensionsWithoutClipping() {
+        let controller = makeController(width: 3, height: 2)
+        let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.rotate(to: .right)
+        #expect(controller.context.width == 2)
+        #expect(controller.context.height == 3)
+        #expect(opaquePixelCount(controller) == 1) // pixel survived the turn
+    }
+
+    @Test func fourRightTurnsIsIdentityOnSquare() {
+        let controller = makeController(width: 3, height: 3)
+        let ink = ColorComponents(red: 10, green: 180, blue: 220, opacity: 255)
+        // An L of three pixels — asymmetric so any wrong turn direction shows up.
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 1, y: 0))
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 1))
+        controller.currentOperationPixelPoints.removeAll()
+
+        for _ in 0..<4 { controller.rotate(to: .right) }
+
+        #expect(controller.context.width == 3)
+        #expect(controller.context.height == 3)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == ink)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == ink)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 1)) == ink)
+        #expect(opaquePixelCount(controller) == 3)
+    }
+
+    @Test func rightTurnIsClockwise() {
+        // A right (clockwise) quarter-turn sends the top row to the right column:
+        // old (x,y) → new (H-1-y, x). Marking three corners of an L pins the
+        // exact geometry (a reflection would fail these — see the fix in
+        // DocumentController.rotate).
+        let controller = makeController(width: 3, height: 3)
+        let topLeft = ColorComponents(red: 200, green: 0, blue: 0, opacity: 255)
+        let topRight = ColorComponents(red: 0, green: 200, blue: 0, opacity: 255)
+        let bottomLeft = ColorComponents(red: 0, green: 0, blue: 200, opacity: 255)
+        controller.simplePaint(colorComponents: topLeft, at: PixelPoint(x: 0, y: 0))
+        controller.simplePaint(colorComponents: topRight, at: PixelPoint(x: 2, y: 0))
+        controller.simplePaint(colorComponents: bottomLeft, at: PixelPoint(x: 0, y: 2))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.rotate(to: .right)
+
+        // top-left → top-right, top-right → bottom-right, bottom-left → top-left.
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 0)) == topLeft)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 2)) == topRight)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == bottomLeft)
+    }
+
+    @Test func leftTurnIsCounterClockwise() {
+        // A left turn is the mirror image: old (x,y) → new (y, W-1-x).
+        let controller = makeController(width: 3, height: 3)
+        let topLeft = ColorComponents(red: 200, green: 0, blue: 0, opacity: 255)
+        let topRight = ColorComponents(red: 0, green: 200, blue: 0, opacity: 255)
+        let bottomLeft = ColorComponents(red: 0, green: 0, blue: 200, opacity: 255)
+        controller.simplePaint(colorComponents: topLeft, at: PixelPoint(x: 0, y: 0))
+        controller.simplePaint(colorComponents: topRight, at: PixelPoint(x: 2, y: 0))
+        controller.simplePaint(colorComponents: bottomLeft, at: PixelPoint(x: 0, y: 2))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.rotate(to: .left)
+
+        // top-left → bottom-left, top-right → top-left, bottom-left → bottom-right.
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 2)) == topLeft)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == topRight)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 2)) == bottomLeft)
+    }
+
+    @Test func twoRightTurnsRotate180() {
+        // The regression guard: a reflection would make this the identity.
+        let controller = makeController(width: 3, height: 3)
+        let ink = ColorComponents(red: 30, green: 90, blue: 240, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.rotate(to: .right)
+        controller.rotate(to: .right)
+
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 2)) == ink) // opposite corner
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+    }
+
+    @Test func leftAndRightAreInverses() {
+        let controller = makeController(width: 4, height: 2)
+        let ink = ColorComponents(red: 30, green: 90, blue: 240, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 3, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.rotate(to: .right)
+        controller.rotate(to: .left)
+
+        #expect(controller.context.width == 4)
+        #expect(controller.context.height == 2)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 3, y: 0)) == ink)
+        #expect(opaquePixelCount(controller) == 1)
+    }
+}
+
+@MainActor
+struct PaletteRampTests {
+
+    // The RRGGBB special palette shades by a fixed ±255/3 (== 85) per channel,
+    // integer math with no HSB float rounding — exact and deterministic.
+    private let step = UInt8(255 / 3)
+
+    @Test func rrggbbHighlightAddsAFixedStep() {
+        let mid = ColorComponents(red: 100, green: 100, blue: 100, opacity: 255)
+        let lit = Palette.rrggbb.highlight(forColorComponents: mid)
+        #expect(lit.red == 100 + step)
+        #expect(lit.green == 100 + step)
+        #expect(lit.blue == 100 + step)
+        #expect(lit.opacity == 255)
+    }
+
+    @Test func rrggbbHighlightClampsNearWhite() {
+        // A channel within one step of 255 saturates rather than overflowing.
+        let bright = ColorComponents(red: 250, green: 100, blue: 0, opacity: 255)
+        let lit = Palette.rrggbb.highlight(forColorComponents: bright)
+        #expect(lit.red == 255)      // clamped
+        #expect(lit.green == 100 + step)
+        #expect(lit.blue == 0)       // a lone zero channel stays put
+    }
+
+    @Test func rrggbbShadowSubtractsAFixedStepAndClampsAtZero() {
+        let mid = ColorComponents(red: 100, green: 40, blue: 200, opacity: 255)
+        let dark = Palette.rrggbb.shadow(forColorComponents: mid)
+        #expect(dark.red == 100 - step)
+        #expect(dark.green == 0)      // 40 < step → clamped to 0
+        #expect(dark.blue == 200 - step)
+        #expect(dark.opacity == 255)
+    }
+
+    @Test func rampsPreserveOpacity() {
+        let translucent = ColorComponents(red: 120, green: 120, blue: 120, opacity: 128)
+        #expect(Palette.rrggbb.highlight(forColorComponents: translucent).opacity == 128)
+        #expect(Palette.rrggbb.shadow(forColorComponents: translucent).opacity == 128)
+    }
+}
+
 struct SerializationTests {
 
     @Test func hexFormattingRoundTrips() {
