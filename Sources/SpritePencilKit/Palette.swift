@@ -10,7 +10,7 @@
 import UIKit
 #endif
 
-public final class Palette: Equatable, Sendable {
+public final class Palette: Equatable, Identifiable, Sendable {
     
     public enum SpecialCase: Sendable {
         case rrggbb, hhhhssbb, rrrgggbb
@@ -88,6 +88,8 @@ public final class Palette: Equatable, Sendable {
     public static func ==(_ lhs: Palette, _ rhs: Palette) -> Bool {
         return lhs.name == rhs.name
     }
+
+    public var id: String { name }
     
     public let name: String
     public let specialCase: SpecialCase?
@@ -105,24 +107,31 @@ public final class Palette: Equatable, Sendable {
     
     #if canImport(UIKit)
     public init?(name: String, image: UIImage, defaultGroupLength: Int, groupLengths: [Int] = []) {
-        guard image.size.height == 1 else { return nil }
+        // Read through the engine's sRGB context — `UIGraphicsBeginImageContext`
+        // is device RGB, so palettes loaded through it could shift colors and
+        // fail to round-trip against pixels painted with them.
+        guard image.size.height == 1, let context = CGContext.spriteDrawingContext(from: image) else { return nil }
         self.name = name
         self.specialCase = nil
         self.defaultGroupLength = defaultGroupLength
         self.groupLengths = groupLengths
-        
-        UIGraphicsBeginImageContext(image.size)
-        image.draw(at: .zero)
-        guard let context = UIGraphicsGetCurrentContext() else { return nil }
+
         let contextDataManager = ContextDataManager(context: context)
-        var colors = [ColorComponents]()
+        self.colors = (0..<context.width).map { contextDataManager[PixelPoint(x: $0, y: 0)] }
+    }
 
-        for x in 0..<context.width {
-            colors.append(contextDataManager[PixelPoint(x: x, y: 0)])
+    /// Encodes the palette as a 1px-tall PNG (one color per pixel) — the
+    /// on-disk format `init(name:image:...)` reads back. Written through the
+    /// same sRGB context the engine paints with, so saved palettes round-trip
+    /// exactly.
+    public func pngData() -> Data? {
+        guard !colors.isEmpty, let context = CGContext.spriteDrawingContext(width: colors.count, height: 1) else { return nil }
+        let contextDataManager = ContextDataManager(context: context)
+        for (x, components) in colors.enumerated() {
+            contextDataManager[PixelPoint(x: x, y: 0)] = components
         }
-
-        self.colors = colors
-        UIGraphicsEndImageContext()
+        guard let image = context.makeImage() else { return nil }
+        return UIImage(cgImage: image).pngData()
     }
     #endif
     

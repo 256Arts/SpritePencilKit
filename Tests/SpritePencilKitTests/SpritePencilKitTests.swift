@@ -328,3 +328,30 @@ struct OperationLifecycleTests {
         #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 2)) == ink)
     }
 }
+
+struct SerializationTests {
+
+    @Test func hexFormattingRoundTrips() {
+        let color = ColorComponents(red: 255, green: 8, blue: 128, opacity: 255)
+        #expect(color.hex == "#FF0880")
+        #expect(ColorComponents(hex: color.hex) == color)
+    }
+
+    @Test func paletteRoundTripsThroughPNG() throws {
+        let palette = Palette(name: "Round Trip", specialCase: nil, colors: [
+            ColorComponents(red: 255, green: 0, blue: 0, opacity: 255),
+            ColorComponents(red: 1, green: 2, blue: 3, opacity: 255),
+            ColorComponents(red: 128, green: 200, blue: 50, opacity: 255),
+        ], defaultGroupLength: 1)
+
+        let data = try #require(palette.pngData())
+        let image = try #require(UIImage(data: data))
+        let loaded = try #require(Palette(name: palette.name, image: image, defaultGroupLength: 1))
+        #expect(loaded.colors == palette.colors)
+    }
+
+    @Test func emptyPaletteHasNoPNG() {
+        let empty = Palette(name: "Empty", specialCase: nil, colors: [], defaultGroupLength: 1)
+        #expect(empty.pngData() == nil)
+    }
+}
