@@ -252,25 +252,23 @@ public class DocumentController {
     }
     
     public func highlight(at point: PixelPoint, size: PixelSize) {
-        for xOffset in 0..<size.width {
-            for yOffset in 0..<size.height {
-                guard brushShape.includes(column: xOffset, row: yOffset, diameter: size.width) else { continue }
-                let brushPoint = PixelPoint(x: point.x + xOffset, y: point.y + yOffset)
-                guard !currentOperationPixelPoints.keys.contains(brushPoint) else { continue }
-                let highlightComponents = (palette ?? Palette.sp16).highlight(forColorComponents: getColorComponents(at: brushPoint))
-                brushPaint(colorComponents: highlightComponents, at: brushPoint, size: PixelSize(width: 1, height: 1))
-            }
-        }
+        shade(at: point, size: size, using: (palette ?? Palette.sp16).highlight(forColorComponents:))
     }
-    
+
     public func shadow(at point: PixelPoint, size: PixelSize) {
+        shade(at: point, size: size, using: (palette ?? Palette.sp16).shadow(forColorComponents:))
+    }
+
+    private func shade(at point: PixelPoint, size: PixelSize, using shade: (ColorComponents) -> ColorComponents) {
         for xOffset in 0..<size.width {
             for yOffset in 0..<size.height {
                 guard brushShape.includes(column: xOffset, row: yOffset, diameter: size.width) else { continue }
                 let brushPoint = PixelPoint(x: point.x + xOffset, y: point.y + yOffset)
+                // Unlike brushPaint's writes, the read below is not clipped to the
+                // canvas, so skip out-of-bounds cells of the brush footprint here.
+                guard 0 <= brushPoint.x, brushPoint.x < context.width, 0 <= brushPoint.y, brushPoint.y < context.height else { continue }
                 guard !currentOperationPixelPoints.keys.contains(brushPoint) else { continue }
-                let shadowComponents = (palette ?? Palette.sp16).shadow(forColorComponents: getColorComponents(at: brushPoint))
-                brushPaint(colorComponents: shadowComponents, at: brushPoint, size: PixelSize(width: 1, height: 1))
+                brushPaint(colorComponents: shade(getColorComponents(at: brushPoint)), at: brushPoint, size: PixelSize(width: 1, height: 1))
             }
         }
     }
@@ -348,7 +346,7 @@ public class DocumentController {
         // draw into a fresh height×width context instead. (For a square canvas
         // the swap is a no-op and the result matches the previous behavior.)
         guard let image = context.makeImage(),
-              let newContext = CGContext(data: nil, width: oldHeight, height: oldWidth, bitsPerComponent: image.bitsPerComponent, bytesPerRow: 0, space: context.colorSpace!, bitmapInfo: image.alphaInfo.rawValue) else { return }
+              let newContext = context.makeMatchingContext(width: oldHeight, height: oldWidth) else { return }
 
         let w = CGFloat(oldWidth)
         let h = CGFloat(oldHeight)
@@ -380,26 +378,17 @@ public class DocumentController {
                 let point = PixelPoint(x: x, y: y)
                 let opacity = getColorComponents(at: point).opacity
                 if opacity == 0 {
-                    // Check if a neighbor has a color
-                    let componentsAbove = getColorComponents(at: PixelPoint(x: x, y: y+1))
-                    if y+1 < context.height, componentsAbove.opacity != 0 {
-                        outline.append((point, componentsAbove))
-                        continue
-                    }
-                    let componentsRight = getColorComponents(at: PixelPoint(x: x+1, y: y))
-                    if x+1 < context.width, componentsRight.opacity != 0 {
-                        outline.append((point, componentsRight))
-                        continue
-                    }
-                    let componentsBelow = getColorComponents(at: PixelPoint(x: x, y: y-1))
-                    if 0 <= y-1, componentsBelow.opacity != 0 {
-                        outline.append((point, componentsBelow))
-                        continue
-                    }
-                    let componentsLeft = getColorComponents(at: PixelPoint(x: x-1, y: y))
-                    if 0 <= x-1, componentsLeft.opacity != 0 {
-                        outline.append((point, componentsLeft))
-                        continue
+                    // Check if a neighbor has a color. Bounds-check each neighbor
+                    // *before* reading it — pixels along the canvas edges would
+                    // otherwise read outside the buffer.
+                    for (dx, dy) in [(0, 1), (1, 0), (0, -1), (-1, 0)] {
+                        let neighbor = PixelPoint(x: x + dx, y: y + dy)
+                        guard 0 <= neighbor.x, neighbor.x < context.width, 0 <= neighbor.y, neighbor.y < context.height else { continue }
+                        let components = getColorComponents(at: neighbor)
+                        if components.opacity != 0 {
+                            outline.append((point, components))
+                            break
+                        }
                     }
                 }
             }
@@ -492,7 +481,7 @@ public class DocumentController {
         guard Int(trimRect.width) < width || Int(trimRect.height) < height else { return }
 
         guard let image = context.makeImage()?.cropping(to: trimRect),
-              let newContext = CGContext(data: nil, width: Int(trimRect.width), height: Int(trimRect.height), bitsPerComponent: image.bitsPerComponent, bytesPerRow: image.bytesPerRow, space: context.colorSpace!, bitmapInfo: image.alphaInfo.rawValue) else { return }
+              let newContext = context.makeMatchingContext(width: Int(trimRect.width), height: Int(trimRect.height)) else { return }
         newContext.draw(image, in: CGRect(origin: .zero, size: trimRect.size))
 
         replaceContext(with: newContext)

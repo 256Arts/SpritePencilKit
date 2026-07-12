@@ -77,15 +77,18 @@ public struct ColorComponents: Equatable, Hashable, Identifiable, Sendable {
         return nil
     }
     
+    /// Canonical packed RGBA. Every fully-transparent value collapses to 0 so
+    /// equality, hashing, and identity agree that "clear is clear" — hashing
+    /// anything more than `==` compares is undefined behavior in Set/Dictionary.
+    public var id: UInt32 {
+        opacity == 0 ? 0 : UInt32(red) << 24 | UInt32(green) << 16 | UInt32(blue) << 8 | UInt32(opacity)
+    }
+
     public static func ==(left: ColorComponents, right: ColorComponents) -> Bool {
-        return (left.opacity == 0 || (left.red == right.red && left.green == right.green && left.blue == right.blue)) && left.opacity == right.opacity
+        left.id == right.id
     }
-    
-    public var id: String {
-        "\(colorSpace):\(red),\(green),\(blue),\(opacity)"
-    }
-    
+
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(self.id)
+        hasher.combine(id)
     }
 }

@@ -521,7 +521,8 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         case .recognized:
             break
         @unknown default:
-            fatalError()
+            // A future UIKit gesture state must not crash shipping apps.
+            break
         }
     }
     
