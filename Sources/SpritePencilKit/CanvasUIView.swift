@@ -9,6 +9,7 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
 
     // Views
     public let documentController: DocumentController
+    var referenceView = UIImageView()
     var spriteView = UIImageView()
     var hoverView = UIView()
     var toolSizeCopy = PixelSize(width: 1, height: 1)
@@ -43,6 +44,13 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
             .draw
         }
         #endif
+    }
+    /// An imported image shown behind the sprite's transparent pixels (above the
+    /// checkerboard, below the drawing) for tracing. Aspect-fit within the canvas.
+    public var referenceImage: UIImage? {
+        didSet {
+            referenceView.image = referenceImage
+        }
     }
     public var twoFingerUndoEnabled = true
     var applePencilUsed = false
@@ -122,11 +130,21 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         spriteView.layer.magnificationFilter = .nearest
         spriteView.translatesAutoresizingMaskIntoConstraints = false
 
+        // The sprite view's intrinsic size drives the canvas size; a reference
+        // photo's own (much larger) intrinsic size must not compete with it.
+        referenceView.contentMode = .scaleAspectFit
+        referenceView.translatesAutoresizingMaskIntoConstraints = false
+        for axis in [NSLayoutConstraint.Axis.horizontal, .vertical] {
+            referenceView.setContentHuggingPriority(UILayoutPriority(1), for: axis)
+            referenceView.setContentCompressionResistancePriority(UILayoutPriority(1), for: axis)
+        }
+
         hoverView.layer.borderWidth = Self.hoverViewBorderWidth
         hoverView.layer.borderColor = UIColor.label.cgColor
         hoverView.isHidden = true
         hoverView.frame.size = CGSize(width: spriteZoomScale + Self.hoverViewBorderWidth/2, height: spriteZoomScale + Self.hoverViewBorderWidth/2)
 
+        addSubview(referenceView)
         addSubview(spriteView)
         spriteView.addSubview(hoverView)
 
@@ -134,7 +152,11 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
             spriteView.topAnchor.constraint(equalTo: self.topAnchor),
             spriteView.bottomAnchor.constraint(equalTo: self.bottomAnchor),
             spriteView.leadingAnchor.constraint(equalTo: self.leadingAnchor),
-            spriteView.trailingAnchor.constraint(equalTo: self.trailingAnchor)
+            spriteView.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            referenceView.topAnchor.constraint(equalTo: self.topAnchor),
+            referenceView.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            referenceView.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+            referenceView.trailingAnchor.constraint(equalTo: self.trailingAnchor)
         ])
 
         let draw = DrawGestureRecognizer(target: self, action: #selector(drawGesture))

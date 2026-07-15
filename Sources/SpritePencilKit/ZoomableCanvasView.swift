@@ -20,6 +20,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
     public var nonDrawingFingerAction: FingerAction
     public var shouldFillPaths: Bool
     public var shouldRecognizeGesturesSimultaneously: Bool
+    public var referenceImage: UIImage?
 
     // Called when the engine emits events
     public var onEvent: ((DocumentController.Event) -> Void)?
@@ -42,6 +43,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         nonDrawingFingerAction: FingerAction = .ignore,
         shouldFillPaths: Bool = false,
         shouldRecognizeGesturesSimultaneously: Bool = true,
+        referenceImage: UIImage? = nil,
         onEvent: ((DocumentController.Event) -> Void)? = nil,
         configure: ((ZoomableUIView) -> Void)? = nil
     ) {
@@ -58,6 +60,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         self.nonDrawingFingerAction = nonDrawingFingerAction
         self.shouldFillPaths = shouldFillPaths
         self.shouldRecognizeGesturesSimultaneously = shouldRecognizeGesturesSimultaneously
+        self.referenceImage = referenceImage
         self.onEvent = onEvent
         self.configure = configure
     }
@@ -97,6 +100,9 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         canvasView.applePencilCanEyedrop = applePencilCanEyedrop
         canvasView.nonDrawingFingerAction = nonDrawingFingerAction
         canvasView.shouldRecognizeGesturesSimultaneously = shouldRecognizeGesturesSimultaneously
+        if canvasView.referenceImage !== referenceImage {
+            canvasView.referenceImage = referenceImage
+        }
         // Diffed: this runs during SwiftUI view updates, and writing observable
         // controller state mid-update would invalidate views for no change.
         if documentController.shouldFillPaths != shouldFillPaths {
