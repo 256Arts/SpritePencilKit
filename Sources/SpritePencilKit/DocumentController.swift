@@ -223,7 +223,7 @@ public class DocumentController {
         eventSubject.send(.refreshUndo)
     }
 
-    public func brushPaint(colorComponents: ColorComponents, at point: PixelPoint, size: PixelSize) {
+    public func brushPaint(colorComponents: ColorComponents, at point: PixelPoint, size: PixelSize, emitsUsedColor: Bool = true) {
 
         let pointInBounds: PixelPoint
         let sizeInBounds: PixelSize
@@ -249,32 +249,28 @@ public class DocumentController {
                 // (unclipped) brush, so the circle stays centered at canvas edges.
                 guard brushShape.includes(column: brushPoint.x - point.x, row: brushPoint.y - point.y, diameter: size.width) else { continue }
 
-                if !checkeredDrawingMode || (brushPoint.x % 2 != brushPoint.y % 2) {
-                    simplePaint(colorComponents: colorComponents, at: brushPoint)
-                }
-                if horizontalSymmetry {
-                    let mirroredY = context.height - brushPoint.y - 1
-                    let brushPoint = PixelPoint(x: brushPoint.x, y: mirroredY)
-                    if !checkeredDrawingMode || (brushPoint.x % 2 != brushPoint.y % 2) {
-                        simplePaint(colorComponents: colorComponents, at: brushPoint)
+                // Paints unless dither mode skips this checkerboard cell.
+                func paint(at point: PixelPoint) {
+                    if !checkeredDrawingMode || (point.x % 2 != point.y % 2) {
+                        simplePaint(colorComponents: colorComponents, at: point)
                     }
+                }
+                let mirroredX = context.width - brushPoint.x - 1
+                let mirroredY = context.height - brushPoint.y - 1
+                paint(at: brushPoint)
+                if horizontalSymmetry {
+                    paint(at: PixelPoint(x: brushPoint.x, y: mirroredY))
                     if verticalSymmetry {
-                        let brushPoint = PixelPoint(x: context.width - brushPoint.x - 1, y: mirroredY)
-                        if !checkeredDrawingMode || (brushPoint.x % 2 != brushPoint.y % 2) {
-                            simplePaint(colorComponents: colorComponents, at: brushPoint)
-                        }
+                        paint(at: PixelPoint(x: mirroredX, y: mirroredY))
                     }
                 }
                 if verticalSymmetry {
-                    let brushPoint = PixelPoint(x: context.width - brushPoint.x - 1, y: brushPoint.y)
-                    if !checkeredDrawingMode || (brushPoint.x % 2 != brushPoint.y % 2) {
-                        simplePaint(colorComponents: colorComponents, at: brushPoint)
-                    }
+                    paint(at: PixelPoint(x: mirroredX, y: brushPoint.y))
                 }
             }
         }
 
-        if 32 < colorComponents.opacity {
+        if emitsUsedColor, 32 < colorComponents.opacity {
             eventSubject.send(.usedColor(colorComponents))
         }
     }
@@ -385,6 +381,9 @@ public class DocumentController {
     }
 
     private func shade(at point: PixelPoint, size: PixelSize, using shade: (ColorComponents) -> ColorComponents) {
+        // Every shaded pixel can produce a different color, so batch the
+        // .usedColor events: one per distinct color per call, not per pixel.
+        var usedColors = [ColorComponents]()
         for xOffset in 0..<size.width {
             for yOffset in 0..<size.height {
                 guard brushShape.includes(column: xOffset, row: yOffset, diameter: size.width) else { continue }
@@ -393,8 +392,15 @@ public class DocumentController {
                 // canvas, so skip out-of-bounds cells of the brush footprint here.
                 guard 0 <= brushPoint.x, brushPoint.x < context.width, 0 <= brushPoint.y, brushPoint.y < context.height else { continue }
                 guard !currentOperationPixelPoints.keys.contains(brushPoint) else { continue }
-                brushPaint(colorComponents: shade(getColorComponents(at: brushPoint)), at: brushPoint, size: PixelSize(width: 1, height: 1))
+                let shadedColor = shade(getColorComponents(at: brushPoint))
+                brushPaint(colorComponents: shadedColor, at: brushPoint, size: PixelSize(width: 1, height: 1), emitsUsedColor: false)
+                if 32 < shadedColor.opacity, !usedColors.contains(shadedColor) {
+                    usedColors.append(shadedColor)
+                }
             }
+        }
+        for color in usedColors {
+            eventSubject.send(.usedColor(color))
         }
     }
 

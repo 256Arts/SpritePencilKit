@@ -28,20 +28,12 @@ public final class Palette: Equatable, Identifiable, Sendable {
     public static let rrggbb = Palette(name: "RRGGBB", specialCase: .rrggbb, colors: {
         var colors = [ColorComponents]()
         for red in 0..<4 {
-                for green in 0..<4 {
-                    for blue in 0..<4 {
-                        colors.append(ColorComponents(red: UInt8(red)*(255/3), green: UInt8(green)*(255/3), blue: UInt8(blue)*(255/3), opacity: 255))
-                    }
+            for green in 0..<4 {
+                for blue in 0..<4 {
+                    colors.append(ColorComponents(red: UInt8(red)*(255/3), green: UInt8(green)*(255/3), blue: UInt8(blue)*(255/3), opacity: 255))
                 }
             }
-            //        case "RRGGBB - P3":
-            //            for red in 0..<4 {
-            //                for green in 0..<4 {
-            //                    for blue in 0..<4 {
-            //                        colors.append(UIColor(displayP3Red: CGFloat(red)/3.0, green: CGFloat(green)/3.0, blue: CGFloat(blue)/3.0, opacity: 1.0))
-            //                    }
-            //                }
-        //            }
+        }
         return colors
     }(), defaultGroupLength: 8)
     public static let hhhhssbb = Palette(name: "HHHHSSBB", specialCase: .hhhhssbb, colors: {
@@ -68,20 +60,12 @@ public final class Palette: Equatable, Identifiable, Sendable {
     public static let rrrgggbb = Palette(name: "RRRGGGBB", specialCase: .rrrgggbb, colors: {
         var colors = [ColorComponents]()
         for red in 0..<8 {
-                for green in 0..<8 {
-                    for blue in 0..<4 {
-                        colors.append(ColorComponents(red: UInt8(red)*(255/7), green: UInt8(green)*(255/7), blue: UInt8(blue)*(255/3), opacity: 255))
-                    }
+            for green in 0..<8 {
+                for blue in 0..<4 {
+                    colors.append(ColorComponents(red: UInt8(red)*(255/7), green: UInt8(green)*(255/7), blue: UInt8(blue)*(255/3), opacity: 255))
                 }
             }
-            //        case "RRRGGGBB - P3":
-            //            for red in 0..<8 {
-            //                for green in 0..<8 {
-            //                    for blue in 0..<4 {
-            //                        colors.append(UIColor(displayP3Red: CGFloat(red)/7.0, green: CGFloat(green)/7.0, blue: CGFloat(blue)/3.0, opacity: 1.0))
-            //                    }
-            //                }
-        //            }
+        }
         return colors
     }(), defaultGroupLength: 8)
     
