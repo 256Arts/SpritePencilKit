@@ -477,6 +477,14 @@ struct TiledPreviewTests {
         #expect(ring.rows == 1)
     }
 
+    @Test func ringIsCappedForATinyCanvas() {
+        // A 1×1 canvas under a zoomed-out viewport would otherwise ask for
+        // hundreds of repeats per side — six figures of replicated instances.
+        let ring = CanvasUIView.tileRingCount(coverage: CGSize(width: 1000, height: 1000), canvasSize: CGSize(width: 2, height: 2))
+        #expect(ring.columns == CanvasUIView.maximumTileRepeatsPerSide)
+        #expect(ring.rows == CanvasUIView.maximumTileRepeatsPerSide)
+    }
+
     @Test func ringIsWiderThanItIsTallForALandscapeViewport() {
         let ring = CanvasUIView.tileRingCount(coverage: CGSize(width: 320, height: 64), canvasSize: CGSize(width: 32, height: 32))
         #expect(ring.columns == 10)

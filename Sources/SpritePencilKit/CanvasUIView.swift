@@ -274,13 +274,21 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         refreshTiledPreview()
     }
 
+    /// Repeats per side beyond which a zoomed-out tiny canvas would ask for
+    /// tens of thousands of replicated instances. Past this the tiling stops
+    /// short of the viewport edge instead.
+    static let maximumTileRepeatsPerSide = 24
+
     /// The number of repeats needed on each side of the canvas to fill
     /// `coverage`. At least one, so the feature reads as tiled even before the
     /// container has reported a visible size.
     nonisolated static func tileRingCount(coverage: CGSize, canvasSize: CGSize) -> (columns: Int, rows: Int) {
         guard 0 < canvasSize.width, 0 < canvasSize.height else { return (1, 1) }
-        return (max(1, Int(ceil(coverage.width / canvasSize.width))),
-                max(1, Int(ceil(coverage.height / canvasSize.height))))
+        func repeats(_ length: CGFloat, per tile: CGFloat) -> Int {
+            min(maximumTileRepeatsPerSide, max(1, Int(ceil(length / tile))))
+        }
+        return (repeats(coverage.width, per: canvasSize.width),
+                repeats(coverage.height, per: canvasSize.height))
     }
 
     private func refreshTiledPreview() {
