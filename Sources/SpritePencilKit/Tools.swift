@@ -97,7 +97,13 @@ public struct MoveTool: Tool {
     // application — see DocumentController.beginMove/continueMove/commitMove.
     public var isContinuous: Bool { true }
 
-    public init() { }
+    /// When set, drags define a rectangular selection (or move an existing one)
+    /// instead of moving the whole canvas — see `DocumentController.selectedArea`.
+    public var selectsArea: Bool
+
+    public init(selectsArea: Bool = false) {
+        self.selectsArea = selectsArea
+    }
 }
 public struct HighlightTool: SizableTool {
     public var width: Int

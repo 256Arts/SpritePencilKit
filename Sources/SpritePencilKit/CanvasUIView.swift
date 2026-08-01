@@ -23,6 +23,12 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
     var verticalSymmetryLineLayer: CALayer?
     var horizontalSymmetryLineLayer: CALayer?
 
+    // Selection (move tool)
+    var selectionLayer: CAShapeLayer?
+    /// Anchor of the marquee drag in progress, or `nil` when a move-tool drag
+    /// moves pixels instead of selecting them.
+    private var marqueeStartPixel: PixelPoint?
+
     // Style
     public var checkerboardColor1: UIColor = .systemGray4
     public var checkerboardColor2: UIColor = .systemGray5
@@ -94,6 +100,8 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
             toolSizeChanged(size: tool.size)
         case .symmetryChanged:
             refreshGrid()
+        case .selectionChanged:
+            refreshSelectionLayer()
         default:
             break
         }
@@ -105,6 +113,7 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
     /// before its zoom-to-fit.
     func canvasWasReplaced() {
         hoverView.isHidden = true
+        refreshSelectionLayer() // the controller cleared the selection
         makeCheckerboard()
         tileGridLayer?.removeFromSuperlayer()
         tileGridLayer = nil
@@ -230,6 +239,34 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         // the shape actually differs from a square — i.e. brushes larger than 2px).
         let rounded = documentController.brushShape == .circle && 2 < size.width
         hoverView.layer.cornerRadius = rounded ? hoverView.bounds.size.width / 2 : 0
+        refreshSelectionLayer() // called on spriteZoomScale changes, which resize the marquee
+    }
+
+    /// Rebuilds the dashed marquee over `documentController.selectedArea`
+    /// (removing it when there is no selection).
+    func refreshSelectionLayer() {
+        guard let selection = documentController.selectedArea else {
+            selectionLayer?.removeFromSuperlayer()
+            selectionLayer = nil
+            return
+        }
+        let layer = selectionLayer ?? {
+            let layer = CAShapeLayer()
+            layer.fillColor = nil
+            layer.lineWidth = 0.4
+            layer.lineDashPattern = [1, 1]
+            layer.strokeColor = tintColor.cgColor
+            spriteView.layer.addSublayer(layer)
+            selectionLayer = layer
+            return layer
+        }()
+        // Without this, CALayer's implicit 0.25s animations make the marquee
+        // trail behind the marquee drag.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.frame = CGRect(x: selection.minX * spriteZoomScale, y: selection.minY * spriteZoomScale, width: selection.width * spriteZoomScale, height: selection.height * spriteZoomScale)
+        layer.path = CGPath(rect: CGRect(origin: .zero, size: layer.frame.size), transform: nil)
+        CATransaction.commit()
     }
 
     public func refreshGrid() {
@@ -410,9 +447,19 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
 
             guard validateTouchesForCurrentTool(gesture.currentTouches) else { return }
 
-            if tool is MoveTool {
-                documentController.beginMove()
-                dragStartPoint = touch.location(in: spriteView)
+            if let moveTool = tool as? MoveTool {
+                let touchLocation = touch.location(in: spriteView)
+                let pixel = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
+                if moveTool.selectsArea,
+                   !(documentController.selectedArea?.contains(CGPoint(x: CGFloat(pixel.x) + 0.5, y: CGFloat(pixel.y) + 0.5)) ?? false) {
+                    // In select mode, a drag outside the current selection (or
+                    // with none) draws a new marquee; inside it moves the pixels.
+                    marqueeStartPixel = clampedToCanvas(pixel)
+                    documentController.setSelectedArea(marqueeRect(from: marqueeStartPixel!, to: pixel))
+                } else {
+                    documentController.beginMove()
+                    dragStartPoint = touchLocation
+                }
             }
             documentController.beginCurrentOperation()
             if let coalesced = gesture.currentEvent?.coalescedTouches(for: touch) {
@@ -444,7 +491,14 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
 
                 switch tool {
                 case is MoveTool:
-                    if let dragStartPoint {
+                    if marqueeStartPixel != nil {
+                        marqueeStartPixel = nil
+                        // A tap (1×1 marquee) clears the selection rather than
+                        // leaving a near-invisible one.
+                        if let selection = documentController.selectedArea, selection.width <= 1, selection.height <= 1 {
+                            documentController.setSelectedArea(nil)
+                        }
+                    } else if let dragStartPoint {
                         documentController.commitMove(delta: delta(start: dragStartPoint, end: touchLocation))
                     }
                     dragStartPoint = nil
@@ -473,6 +527,7 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
             hoverView.isHidden = true
             documentController.hoverPoint = nil
             dragStartPoint = nil
+            marqueeStartPixel = nil
 
             documentController.cancelCurrentOperation()
             documentController.endCurrentOperation()
@@ -514,13 +569,18 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         guard tool.isContinuous else { return }
         for touch in touches {
             let touchLocation = touch.location(in: spriteView)
-            if tool is MoveTool {
+            if let start = marqueeStartPixel {
+                let pixel = makePixelPoint(touchLocation: touchLocation, toolSize: PixelSize(width: 1, height: 1))
+                documentController.setSelectedArea(marqueeRect(from: start, to: pixel))
+            } else if tool is MoveTool {
                 moveViaTouchLocation(touchLocation)
             } else {
                 let point = makePixelPoint(touchLocation: touchLocation, toolSize: tool.size)
                 tool.apply(at: point, controller: documentController)
             }
         }
+        // A marquee drag changes no pixels — nothing to re-render.
+        guard marqueeStartPixel == nil else { return }
         documentController.refresh()
 
         if !(tool is MoveTool), let touch = touches.first {
@@ -538,7 +598,33 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
 
     func moveViaTouchLocation(_ touchLocation: CGPoint) {
         guard let dragStartPoint = dragStartPoint else { return }
-        documentController.continueMove(delta: delta(start: dragStartPoint, end: touchLocation))
+        let delta = delta(start: dragStartPoint, end: touchLocation)
+        documentController.continueMove(delta: delta)
+        // The marquee rides along with the pixels it frames; the controller
+        // re-announces the settled selection on commit.
+        if let selection = documentController.selectedArea, let layer = selectionLayer {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.frame.origin = CGPoint(x: (selection.minX + delta.width) * spriteZoomScale, y: (selection.minY + delta.height) * spriteZoomScale)
+            CATransaction.commit()
+        }
+    }
+
+    // MARK: - Marquee helpers
+
+    private func clampedToCanvas(_ pixel: PixelPoint) -> PixelPoint {
+        PixelPoint(x: min(max(0, pixel.x), documentController.context.width - 1),
+                   y: min(max(0, pixel.y), documentController.context.height - 1))
+    }
+
+    /// The inclusive pixel rect spanned by a marquee drag from `start`
+    /// (already clamped) to `end` (clamped here — drags may leave the canvas).
+    private func marqueeRect(from start: PixelPoint, to end: PixelPoint) -> CGRect {
+        let end = clampedToCanvas(end)
+        return CGRect(x: min(start.x, end.x),
+                      y: min(start.y, end.y),
+                      width: abs(start.x - end.x) + 1,
+                      height: abs(start.y - end.y) + 1)
     }
 
 }

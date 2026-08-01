@@ -309,6 +309,18 @@ struct OperationLifecycleTests {
         #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 1)) == .clear)
     }
 
+    @Test func zeroDeltaMoveRegistersNoUndo() {
+        // A tap with the move tool changes nothing and must not pollute the
+        // undo stack.
+        let controller = makeController(width: 4, height: 4)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+
+        controller.beginMove()
+        controller.commitMove(delta: .zero)
+        #expect(!undoManager.canUndo)
+    }
+
     @Test func trimCanvasUndoRestoresTheOriginalContext() {
         let controller = makeController(width: 4, height: 4)
         let undoManager = UndoManager()
@@ -326,6 +338,118 @@ struct OperationLifecycleTests {
         #expect(controller.context.width == 4)
         #expect(controller.context.height == 4)
         #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 2)) == ink)
+    }
+}
+
+@MainActor
+struct SelectionMoveTests {
+
+    @Test func selectionMoveMovesOnlySelectedPixels() {
+        let controller = makeController(width: 4, height: 4)
+        let inside = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        let outside = ColorComponents(red: 50, green: 50, blue: 200, opacity: 255)
+        controller.simplePaint(colorComponents: inside, at: PixelPoint(x: 0, y: 0))
+        controller.simplePaint(colorComponents: outside, at: PixelPoint(x: 3, y: 3))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.setSelectedArea(CGRect(x: 0, y: 0, width: 2, height: 2))
+        controller.beginMove()
+        controller.commitMove(delta: CGSize(width: 1, height: 1))
+
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == inside)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+        // Pixels outside the selection stay put.
+        #expect(controller.getColorComponents(at: PixelPoint(x: 3, y: 3)) == outside)
+        // The selection follows its pixels.
+        #expect(controller.selectedArea == CGRect(x: 1, y: 1, width: 2, height: 2))
+    }
+
+    @Test func selectionMoveClipsAtEdgesInsteadOfWrapping() {
+        let controller = makeController(width: 4, height: 4)
+        let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 0, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.setSelectedArea(CGRect(x: 0, y: 0, width: 1, height: 1))
+        controller.beginMove()
+        controller.commitMove(delta: CGSize(width: -1, height: 0))
+
+        // The pixel fell off the left edge — nowhere on the canvas (a
+        // whole-canvas move would have wrapped it to x=3).
+        for x in 0..<4 {
+            for y in 0..<4 {
+                #expect(controller.getColorComponents(at: PixelPoint(x: x, y: y)) == .clear)
+            }
+        }
+        // A selection pushed entirely off-canvas clears itself.
+        #expect(controller.selectedArea == nil)
+    }
+
+    @Test func selectionMoveOverwritesAndUndoRestoresEverything() {
+        let controller = makeController(width: 4, height: 4)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let moved = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        let covered = ColorComponents(red: 50, green: 200, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: moved, at: PixelPoint(x: 0, y: 0))
+        controller.simplePaint(colorComponents: covered, at: PixelPoint(x: 1, y: 0))
+        controller.currentOperationPixelPoints.removeAll()
+
+        controller.setSelectedArea(CGRect(x: 0, y: 0, width: 1, height: 1))
+        controller.beginMove()
+        controller.commitMove(delta: CGSize(width: 1, height: 0))
+
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == moved)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+
+        // Undo restores both the moved pixel and the one it covered
+        // (an inverse move couldn't — hence the snapshot undo).
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == moved)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == covered)
+
+        controller.redo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == moved)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == .clear)
+    }
+
+    @Test func setSelectedAreaClipsToTheCanvas() {
+        let controller = makeController(width: 4, height: 4)
+
+        controller.setSelectedArea(CGRect(x: -2, y: 2, width: 10, height: 10))
+        #expect(controller.selectedArea == CGRect(x: 0, y: 2, width: 4, height: 2))
+
+        controller.setSelectedArea(CGRect(x: 5, y: 5, width: 2, height: 2))
+        #expect(controller.selectedArea == nil)
+    }
+
+    @Test func leavingTheMoveToolClearsTheSelection() {
+        let controller = makeController(width: 4, height: 4)
+        controller.setSelectedArea(CGRect(x: 1, y: 1, width: 2, height: 2))
+        #expect(controller.selectedArea != nil)
+
+        controller.tool = controller.pencilTool
+        #expect(controller.selectedArea == nil)
+    }
+
+    @Test func disablingSelectModeClearsTheSelection() {
+        let controller = makeController(width: 4, height: 4)
+        controller.moveTool.selectsArea = true
+        controller.setSelectedArea(CGRect(x: 1, y: 1, width: 2, height: 2))
+
+        controller.moveTool.selectsArea = false
+        #expect(controller.selectedArea == nil)
+    }
+
+    @Test func canvasReplacementClearsTheSelection() {
+        let controller = makeController(width: 4, height: 4)
+        let ink = ColorComponents(red: 200, green: 50, blue: 50, opacity: 255)
+        controller.simplePaint(colorComponents: ink, at: PixelPoint(x: 1, y: 2))
+        controller.currentOperationPixelPoints.removeAll()
+        controller.setSelectedArea(CGRect(x: 0, y: 0, width: 2, height: 2))
+
+        controller.trimCanvas()
+        #expect(controller.selectedArea == nil)
     }
 }
 

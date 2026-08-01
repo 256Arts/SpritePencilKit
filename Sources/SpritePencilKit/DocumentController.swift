@@ -28,6 +28,8 @@ public class DocumentController {
         case symmetryChanged
         case eyedropColor(ColorComponents, point: PixelPoint)
         case usedColor(ColorComponents)
+        /// The move tool's selected area was set, moved, or cleared.
+        case selectionChanged
         case refreshUndo
         case didBeginUsingTool
         case didEndUsingTool
@@ -77,19 +79,31 @@ public class DocumentController {
     @ObservationIgnored var currentOperationOrderedPixelPoints = [PixelPoint]()
     /// The canvas as it was when the current move drag began.
     @ObservationIgnored private var moveBaseImage: CGImage?
+    /// The selected pixels lifted out of that snapshot (selection moves only).
+    @ObservationIgnored private var moveSelectionImage: CGImage?
+    /// The snapshot with the selected area cleared — what shows behind the
+    /// lifted pixels while they ride the drag (selection moves only).
+    @ObservationIgnored private var moveBackgroundImage: CGImage?
 
     // MARK: Tools
 
     public var pencilTool = PencilTool(width: 1)
     public var eraserTool = EraserTool(width: 1)
     public var fillTool = FillTool()
-    public var moveTool = MoveTool()
+    public var moveTool = MoveTool() {
+        didSet {
+            // Turning select mode off drops the selection — a stale marquee
+            // would silently keep drags moving only part of the canvas.
+            if !moveTool.selectsArea { setSelectedArea(nil) }
+        }
+    }
     public var highlightTool = HighlightTool(width: 1)
     public var shadowTool = ShadowTool(width: 1)
     public var eyedropperTool = EyedropperTool()
     public var previousTool: Tool = EraserTool(width: 1)
     public var tool: Tool = PencilTool(width: 1) {
         didSet {
+            if !(tool is MoveTool) { setSelectedArea(nil) }
             if type(of: tool) != type(of: oldValue) {
                 #if !os(visionOS)
                 UISelectionFeedbackGenerator().selectionChanged()
@@ -124,6 +138,7 @@ public class DocumentController {
     /// Installs the initial canvas. No undo is registered: loading a document
     /// is not an edit.
     public func loadContext(_ newContext: CGContext) {
+        setSelectedArea(nil)
         context = newContext
         refresh()
         eventSubject.send(.canvasReplaced)
@@ -163,6 +178,13 @@ public class DocumentController {
     /// Repaints the operation's pixels back to their previous colors (small
     /// strokes only) and discards the stroke state.
     public func cancelCurrentOperation() {
+        // A canceled move drag has already blitted offsets into the context;
+        // restore the drag-start snapshot.
+        if moveBaseImage != nil {
+            continueMove(delta: .zero)
+            clearMoveState()
+            refresh()
+        }
         if currentOperationIsCancelable, !currentOperationPixelPoints.isEmpty {
             for (point, previousColor) in currentOperationPixelPoints {
                 contextDataManager[point] = previousColor
@@ -191,11 +213,15 @@ public class DocumentController {
     // MARK: - Undo
 
     public func undo() {
+        // Cleared first: the restored pixels won't match the marquee, and a
+        // replayed `archivedMove` must not lift the selection in `beginMove`.
+        setSelectedArea(nil)
         undoManager?.undo()
         clearCurrentOperation()
         refresh()
     }
     public func redo() {
+        setSelectedArea(nil)
         undoManager?.redo()
         clearCurrentOperation()
         refresh()
@@ -320,13 +346,49 @@ public class DocumentController {
 
     // MARK: - Move
 
-    /// Snapshots the canvas; `continueMove(delta:)` offsets are relative to it.
-    public func beginMove() {
-        moveBaseImage = context.makeImage()
+    /// The area the move tool drags, in pixel coordinates (top-left origin),
+    /// or `nil` to move the whole canvas. Always within the canvas bounds.
+    public private(set) var selectedArea: CGRect?
+
+    /// Sets (or clears) the move tool's selection, standardized and clipped to
+    /// the canvas — a rect entirely off-canvas clears it. Announced via the
+    /// `.selectionChanged` event.
+    public func setSelectedArea(_ area: CGRect?) {
+        var newValue: CGRect?
+        if let area, context != nil {
+            let canvasBounds = CGRect(x: 0, y: 0, width: context.width, height: context.height)
+            let clipped = area.standardized.intersection(canvasBounds)
+            if !clipped.isEmpty { newValue = clipped }
+        }
+        guard newValue != selectedArea else { return }
+        selectedArea = newValue
+        eventSubject.send(.selectionChanged)
     }
 
-    /// Blits the drag-start snapshot offset by `delta`, wrapping around the
-    /// canvas edges.
+    /// `pixelRect` converted from pixel coordinates (y-down, like `PixelPoint`)
+    /// to the context's drawing space (y-up, origin bottom-left).
+    private func yUpRect(for pixelRect: CGRect) -> CGRect {
+        CGRect(x: pixelRect.minX, y: CGFloat(context.height) - pixelRect.maxY, width: pixelRect.width, height: pixelRect.height)
+    }
+
+    /// Snapshots the canvas; `continueMove(delta:)` offsets are relative to it.
+    /// With a `selectedArea`, also lifts the selected pixels out of the
+    /// snapshot so only they ride the drag.
+    public func beginMove() {
+        moveBaseImage = context.makeImage()
+        guard let selection = selectedArea, let baseImage = moveBaseImage else { return }
+        // CGImage.cropping works in raster (y-down) coordinates — the same
+        // space as the selection.
+        moveSelectionImage = baseImage.cropping(to: selection)
+        guard let scratch = context.makeMatchingContext(width: context.width, height: context.height) else { return }
+        scratch.draw(baseImage, in: CGRect(x: 0, y: 0, width: context.width, height: context.height))
+        scratch.clear(yUpRect(for: selection))
+        moveBackgroundImage = scratch.makeImage()
+    }
+
+    /// Blits the drag-start snapshot offset by `delta`. A whole-canvas move
+    /// wraps around the canvas edges; a selection move keeps the background
+    /// put and clips the lifted pixels at the edges instead.
     public func continueMove(delta: CGSize) {
         guard let baseImage = moveBaseImage else { return }
         context.clear()
@@ -337,12 +399,18 @@ public class DocumentController {
         let dx = delta.width
         let dy = delta.height
 
+        if let selectionImage = moveSelectionImage, let backgroundImage = moveBackgroundImage, let selection = selectedArea {
+            context.draw(backgroundImage, in: CGRect(origin: .zero, size: size))
+            // CGContext is y-up, so the vertical offset is negated relative to
+            // the touch delta (y-down).
+            context.draw(selectionImage, in: yUpRect(for: selection).offsetBy(dx: dx, dy: -dy))
+            return
+        }
+
         // Second copy on each axis creates the seamless wrap-around while dragging.
         let wrapX = dx + (0 < dx ? -1 : 1) * w
         let wrapY = dy + (0 < dy ? -1 : 1) * h
 
-        // CGContext is y-up (origin bottom-left), so the vertical offset is negated
-        // relative to the touch delta (y-down).
         for origin in [CGPoint(x: dx, y: -dy),
                        CGPoint(x: wrapX, y: -dy),
                        CGPoint(x: dx, y: -wrapY),
@@ -353,11 +421,41 @@ public class DocumentController {
 
     public func commitMove(delta: CGSize) {
         continueMove(delta: delta)
-        moveBaseImage = nil
-        undoManager?.registerUndo(withTarget: self) { target in
-            target.archivedMove(deltaPoint: CGSize(width: -delta.width, height: -delta.height))
+        let baseImage = moveBaseImage
+        let movedSelection = moveSelectionImage != nil
+        clearMoveState()
+
+        // A tap with the move tool changes nothing — don't register an undo.
+        guard delta != .zero else {
+            refresh()
+            return
+        }
+
+        if movedSelection {
+            // A selection move isn't its own inverse (it overwrites pixels and
+            // clips at the edges), so undo restores the drag-start snapshot.
+            if let baseImage {
+                undoManager?.registerUndo(withTarget: self) { target in
+                    target.archivedDraw(baseImage)
+                }
+            }
+            // The selection follows its pixels (clipped to the canvas), so the
+            // next drag keeps moving them.
+            if let selection = selectedArea {
+                setSelectedArea(selection.offsetBy(dx: delta.width, dy: delta.height))
+            }
+        } else {
+            undoManager?.registerUndo(withTarget: self) { target in
+                target.archivedMove(deltaPoint: CGSize(width: -delta.width, height: -delta.height))
+            }
         }
         refresh()
+    }
+
+    private func clearMoveState() {
+        moveBaseImage = nil
+        moveSelectionImage = nil
+        moveBackgroundImage = nil
     }
 
     func archivedMove(deltaPoint: CGSize) {
@@ -609,6 +707,7 @@ public class DocumentController {
     /// resize can't be undone by replaying an inverse diff, so we hold onto
     /// the old context and swap it back.
     private func replaceContext(with newContext: CGContext) {
+        setSelectedArea(nil)
         let oldContext = context!
         context = newContext
         refresh()
