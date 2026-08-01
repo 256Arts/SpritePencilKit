@@ -484,6 +484,70 @@ struct TiledPreviewTests {
     }
 }
 
+@MainActor
+struct TiledPreviewViewTests {
+
+    /// A canvas inside its zoomable container, laid out at a realistic size.
+    private func makeCanvas(pixels: Int) -> (CanvasUIView, ZoomableUIView) {
+        let controller = makeController(width: pixels, height: pixels)
+        let canvas = CanvasUIView(documentController: controller)
+        let zoomable = ZoomableUIView(contentView: canvas, documentController: controller)
+        zoomable.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        zoomable.setupView()
+        zoomable.layoutIfNeeded()
+        return (canvas, zoomable)
+    }
+
+    @Test func enablingTheTiledPreviewRingsTheCanvasWithRepeats() {
+        let (canvas, zoomable) = makeCanvas(pixels: 8)
+        canvas.tiledPreviewEnabled = true
+        zoomable.layoutIfNeeded()
+
+        let tileSize = CGSize(width: 8 * canvas.spriteZoomScale, height: 8 * canvas.spriteZoomScale)
+        let columns = (canvas.tiledPreviewColumnsLayer.instanceCount - 1) / 2
+        let rows = (canvas.tiledPreviewRowsLayer.instanceCount - 1) / 2
+
+        #expect(!canvas.tiledPreviewRowsLayer.isHidden)
+        #expect(canvas.tiledPreviewTileLayer.contents != nil) // the sprite itself
+        #expect(canvas.tiledPreviewTileLayer.frame.size == tileSize)
+        // A full ring on every side, reaching past the visible area.
+        #expect(1 <= columns)
+        #expect(1 <= rows)
+        #expect(400 <= CGFloat(columns) * tileSize.width * zoomable.zoomScale)
+        #expect(300 <= CGFloat(rows) * tileSize.height * zoomable.zoomScale)
+        // Starting a whole number of tiles up and to the left is what keeps the
+        // repeats seamless with the canvas.
+        #expect(canvas.tiledPreviewRowsLayer.frame.origin == CGPoint(x: -CGFloat(columns) * tileSize.width, y: -CGFloat(rows) * tileSize.height))
+    }
+
+    @Test func theRingIsHiddenUntilTheTiledPreviewIsTurnedOn() {
+        let (canvas, _) = makeCanvas(pixels: 8)
+        #expect(canvas.tiledPreviewRowsLayer.isHidden)
+
+        canvas.tiledPreviewEnabled = true
+        #expect(!canvas.tiledPreviewRowsLayer.isHidden)
+
+        canvas.tiledPreviewEnabled = false
+        #expect(canvas.tiledPreviewRowsLayer.isHidden)
+    }
+
+    @Test func theRepeatsFollowEveryEditAndCanvasResize() {
+        let (canvas, zoomable) = makeCanvas(pixels: 8)
+        canvas.tiledPreviewEnabled = true
+        zoomable.layoutIfNeeded()
+        let beforeEdit = canvas.tiledPreviewTileLayer.contents as! CGImage
+
+        canvas.documentController.simplePaint(colorComponents: ColorComponents(red: 10, green: 20, blue: 30, opacity: 255), at: PixelPoint(x: 1, y: 1))
+        canvas.documentController.refresh()
+        #expect((canvas.tiledPreviewTileLayer.contents as! CGImage) !== beforeEdit)
+
+        // Trimming replaces the context, so the tile has to be resized to match.
+        canvas.documentController.trimCanvas()
+        zoomable.layoutIfNeeded()
+        #expect(canvas.tiledPreviewTileLayer.frame.size == CGSize(width: 1 * canvas.spriteZoomScale, height: 1 * canvas.spriteZoomScale))
+    }
+}
+
 struct BrushShapeTests {
 
     @Test func squareIncludesEveryCell() {

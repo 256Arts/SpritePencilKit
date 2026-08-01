@@ -27,9 +27,9 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
     /// Repeats of the sprite filling the space around the canvas, so a tilemap
     /// tile can be judged where it will actually sit. Display only — the
     /// repeats take no touches and only the canvas itself is drawable.
-    private let tiledPreviewRowsLayer = CAReplicatorLayer()
-    private let tiledPreviewColumnsLayer = CAReplicatorLayer()
-    private let tiledPreviewTileLayer = CALayer()
+    let tiledPreviewRowsLayer = CAReplicatorLayer()
+    let tiledPreviewColumnsLayer = CAReplicatorLayer()
+    let tiledPreviewTileLayer = CALayer()
     /// The area the repeats must fill, in canvas points, set by the zoomable
     /// container from its visible rect.
     private var tiledPreviewCoverage: CGSize = .zero
