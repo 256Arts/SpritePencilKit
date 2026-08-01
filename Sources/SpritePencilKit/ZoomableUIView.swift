@@ -118,6 +118,14 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
         // gestures; sync it so panning/centering use the new dimensions.
         contentSize = contentView.frame.size
         contentView.frame.origin = .zero
+        refreshTiledPreviewCoverage()
+    }
+
+    /// Tells the canvas how far its tiled repeats have to reach — the visible
+    /// area, measured in the canvas's own (unzoomed) points.
+    private func refreshTiledPreviewCoverage() {
+        guard 0 < zoomScale else { return }
+        contentView.updateTiledPreview(covering: CGSize(width: bounds.width / zoomScale, height: bounds.height / zoomScale))
     }
 
     // MARK: - Touches & Hover
@@ -172,6 +180,7 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
         }
 
         centerContent()
+        refreshTiledPreviewCoverage()
     }
 
     public func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {

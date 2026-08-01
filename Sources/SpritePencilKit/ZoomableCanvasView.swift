@@ -11,6 +11,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
     public var zoomEnabled: Bool
     public var pixelGridEnabled: Bool
     public var tileGridEnabled: Bool
+    public var tiledPreviewEnabled: Bool
     public var checkerboardColor1: UIColor
     public var checkerboardColor2: UIColor
     public var tileGridColor: UIColor
@@ -34,6 +35,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         zoomEnabled: Bool = true,
         pixelGridEnabled: Bool = false,
         tileGridEnabled: Bool = false,
+        tiledPreviewEnabled: Bool = false,
         checkerboardColor1: UIColor = .systemGray4,
         checkerboardColor2: UIColor = .systemGray5,
         tileGridColor: UIColor = .systemGray3,
@@ -51,6 +53,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         self.zoomEnabled = zoomEnabled
         self.pixelGridEnabled = pixelGridEnabled
         self.tileGridEnabled = tileGridEnabled
+        self.tiledPreviewEnabled = tiledPreviewEnabled
         self.checkerboardColor1 = checkerboardColor1
         self.checkerboardColor2 = checkerboardColor2
         self.tileGridColor = tileGridColor
@@ -100,6 +103,7 @@ public struct ZoomableCanvasView: UIViewRepresentable {
         canvasView.applePencilCanEyedrop = applePencilCanEyedrop
         canvasView.nonDrawingFingerAction = nonDrawingFingerAction
         canvasView.shouldRecognizeGesturesSimultaneously = shouldRecognizeGesturesSimultaneously
+        canvasView.tiledPreviewEnabled = tiledPreviewEnabled
         if canvasView.referenceImage !== referenceImage {
             canvasView.referenceImage = referenceImage
         }

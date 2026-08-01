@@ -23,6 +23,17 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
     var verticalSymmetryLineLayer: CALayer?
     var horizontalSymmetryLineLayer: CALayer?
 
+    // Tiled preview
+    /// Repeats of the sprite filling the space around the canvas, so a tilemap
+    /// tile can be judged where it will actually sit. Display only — the
+    /// repeats take no touches and only the canvas itself is drawable.
+    private let tiledPreviewRowsLayer = CAReplicatorLayer()
+    private let tiledPreviewColumnsLayer = CAReplicatorLayer()
+    private let tiledPreviewTileLayer = CALayer()
+    /// The area the repeats must fill, in canvas points, set by the zoomable
+    /// container from its visible rect.
+    private var tiledPreviewCoverage: CGSize = .zero
+
     // Selection (move tool)
     var selectionLayer: CAShapeLayer?
     /// Anchor of the marquee drag in progress, or `nil` when a move-tool drag
@@ -56,6 +67,15 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
     public var referenceImage: UIImage? {
         didSet {
             referenceView.image = referenceImage
+        }
+    }
+    /// Draws the sprite repeating in every direction around the canvas, for
+    /// checking that a tilemap tile lines up with its neighbours.
+    public var tiledPreviewEnabled = false {
+        didSet {
+            guard tiledPreviewEnabled != oldValue else { return }
+            tiledPreviewRowsLayer.isHidden = !tiledPreviewEnabled
+            refreshTiledPreview()
         }
     }
     public var twoFingerUndoEnabled = true
@@ -96,6 +116,7 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         switch event {
         case .drawingDidChange:
             spriteView.image = documentController.renderedImage
+            refreshTiledPreviewContents()
         case .toolChanged(let tool):
             toolSizeChanged(size: tool.size)
         case .symmetryChanged:
@@ -115,6 +136,9 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         hoverView.isHidden = true
         refreshSelectionLayer() // the controller cleared the selection
         makeCheckerboard()
+        // The ring is sized in canvases, so a new canvas size needs a new ring.
+        tiledPreviewCoverage = .zero
+        refreshTiledPreview()
         tileGridLayer?.removeFromSuperlayer()
         tileGridLayer = nil
         pixelGridLayer?.removeFromSuperlayer()
@@ -152,6 +176,15 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         hoverView.layer.borderColor = UIColor.label.cgColor
         hoverView.isHidden = true
         hoverView.frame.size = CGSize(width: spriteZoomScale + Self.hoverViewBorderWidth/2, height: spriteZoomScale + Self.hoverViewBorderWidth/2)
+
+        tiledPreviewTileLayer.magnificationFilter = .nearest
+        tiledPreviewRowsLayer.isHidden = !tiledPreviewEnabled
+        tiledPreviewColumnsLayer.addSublayer(tiledPreviewTileLayer)
+        tiledPreviewRowsLayer.addSublayer(tiledPreviewColumnsLayer)
+        // Below the checkerboard's own subviews, and outside the canvas bounds:
+        // neither replicator clips, so the ring spills into the surrounding
+        // scroll view the way an infinite tiling should.
+        layer.addSublayer(tiledPreviewRowsLayer)
 
         addSubview(referenceView)
         addSubview(spriteView)
@@ -222,6 +255,62 @@ public class CanvasUIView: UIImageView, UIGestureRecognizerDelegate {
         guard let cgImage = ciContext.createCGImage(image, from: rect) else { return }
         self.image = UIImage(cgImage: cgImage)
         #endif
+    }
+
+    override public func layoutSubviews() {
+        super.layoutSubviews()
+        // Picks up canvas resizes and spriteZoomScale changes.
+        refreshTiledPreview()
+    }
+
+    // MARK: - Tiled preview
+
+    /// Reports how much room the repeats have to fill, in canvas points. The
+    /// zoomable container calls this as the visible area changes; the ring only
+    /// ever grows, so zooming out doesn't rebuild it on every frame.
+    func updateTiledPreview(covering coverage: CGSize) {
+        guard tiledPreviewCoverage.width < coverage.width || tiledPreviewCoverage.height < coverage.height else { return }
+        tiledPreviewCoverage = CGSize(width: max(tiledPreviewCoverage.width, coverage.width), height: max(tiledPreviewCoverage.height, coverage.height))
+        refreshTiledPreview()
+    }
+
+    /// The number of repeats needed on each side of the canvas to fill
+    /// `coverage`. At least one, so the feature reads as tiled even before the
+    /// container has reported a visible size.
+    nonisolated static func tileRingCount(coverage: CGSize, canvasSize: CGSize) -> (columns: Int, rows: Int) {
+        guard 0 < canvasSize.width, 0 < canvasSize.height else { return (1, 1) }
+        return (max(1, Int(ceil(coverage.width / canvasSize.width))),
+                max(1, Int(ceil(coverage.height / canvasSize.height))))
+    }
+
+    private func refreshTiledPreview() {
+        guard tiledPreviewEnabled, let context = documentController.context else { return }
+
+        let tileSize = CGSize(width: CGFloat(context.width) * spriteZoomScale, height: CGFloat(context.height) * spriteZoomScale)
+        let (columns, rows) = Self.tileRingCount(coverage: tiledPreviewCoverage, canvasSize: tileSize)
+
+        // Replicated instances only run in +x/+y, so the source tile starts a
+        // full ring up and to the left of the canvas.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        tiledPreviewRowsLayer.frame = CGRect(origin: CGPoint(x: -CGFloat(columns) * tileSize.width, y: -CGFloat(rows) * tileSize.height), size: tileSize)
+        tiledPreviewRowsLayer.instanceCount = 2 * rows + 1
+        tiledPreviewRowsLayer.instanceTransform = CATransform3DMakeTranslation(0, tileSize.height, 0)
+        tiledPreviewColumnsLayer.frame = CGRect(origin: .zero, size: tileSize)
+        tiledPreviewColumnsLayer.instanceCount = 2 * columns + 1
+        tiledPreviewColumnsLayer.instanceTransform = CATransform3DMakeTranslation(tileSize.width, 0, 0)
+        tiledPreviewTileLayer.frame = CGRect(origin: .zero, size: tileSize)
+        CATransaction.commit()
+
+        refreshTiledPreviewContents()
+    }
+
+    private func refreshTiledPreviewContents() {
+        guard tiledPreviewEnabled else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true) // no crossfade behind every stroke
+        tiledPreviewTileLayer.contents = documentController.renderedImage?.cgImage
+        CATransaction.commit()
     }
 
     override public func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {

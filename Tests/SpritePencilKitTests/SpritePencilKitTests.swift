@@ -453,6 +453,37 @@ struct SelectionMoveTests {
     }
 }
 
+struct TiledPreviewTests {
+
+    @Test func ringCoversAWholeMultipleOfTheCanvas() {
+        // 100pt of room around a 30pt canvas needs 4 repeats per side (120pt).
+        let ring = CanvasUIView.tileRingCount(coverage: CGSize(width: 100, height: 100), canvasSize: CGSize(width: 30, height: 30))
+        #expect(ring.columns == 4)
+        #expect(ring.rows == 4)
+    }
+
+    @Test func ringIsAtLeastOneRepeatPerSide() {
+        // Before the container has reported a visible size, the canvas still
+        // has to look tiled rather than bare.
+        let ring = CanvasUIView.tileRingCount(coverage: .zero, canvasSize: CGSize(width: 32, height: 32))
+        #expect(ring.columns == 1)
+        #expect(ring.rows == 1)
+    }
+
+    @Test func ringSurvivesAnEmptyCanvas() {
+        // No division by zero before a context is loaded.
+        let ring = CanvasUIView.tileRingCount(coverage: CGSize(width: 500, height: 500), canvasSize: .zero)
+        #expect(ring.columns == 1)
+        #expect(ring.rows == 1)
+    }
+
+    @Test func ringIsWiderThanItIsTallForALandscapeViewport() {
+        let ring = CanvasUIView.tileRingCount(coverage: CGSize(width: 320, height: 64), canvasSize: CGSize(width: 32, height: 32))
+        #expect(ring.columns == 10)
+        #expect(ring.rows == 2)
+    }
+}
+
 struct BrushShapeTests {
 
     @Test func squareIncludesEveryCell() {
