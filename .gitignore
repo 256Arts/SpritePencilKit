@@ -3,3 +3,8 @@
 /Packages
 /*.xcodeproj
 xcuserdata/
+
+# Xcode state, build products, agent scratchpad, macOS
+build/
+DerivedData/
+.context/
