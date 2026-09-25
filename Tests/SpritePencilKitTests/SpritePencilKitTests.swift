@@ -556,6 +556,23 @@ struct TiledPreviewViewTests {
     }
 }
 
+@MainActor
+struct ZoomToFitTests {
+
+    @Test func theFirstLayoutFitsTheCanvasToTheView() {
+        // Sized through `frame`, as SwiftUI does — which never calls the
+        // `bounds` setter, so a fit hung off that never ran.
+        let controller = makeController(width: 16, height: 16)
+        let zoomable = ZoomableUIView(contentView: CanvasUIView(documentController: controller), documentController: controller)
+        zoomable.setupView()
+        zoomable.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        zoomable.layoutIfNeeded()
+
+        // A square canvas in a landscape view fits its height.
+        #expect(abs(zoomable.contentView.frame.height - 300) < 0.5)
+    }
+}
+
 struct BrushShapeTests {
 
     @Test func squareIncludesEveryCell() {

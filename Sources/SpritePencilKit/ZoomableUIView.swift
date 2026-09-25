@@ -19,13 +19,17 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
     public let contentView: CanvasUIView
     private var eventSubscription: AnyCancellable?
 
-    override public var bounds: CGRect {
-        didSet {
-            // Only a size change (initial layout, rotation, split-screen
-            // resize) re-fits; bounds.origin changes on every scroll tick.
-            if oldValue.size != bounds.size, documentController.context != nil, !userIsZooming {
-                zoomToFit()
-            }
+    /// The visible size the canvas was last fitted to.
+    private var fittedSize: CGSize?
+
+    override public func layoutSubviews() {
+        super.layoutSubviews()
+        // Only a size change (initial layout, rotation, split-screen resize,
+        // a sheet claiming the bottom edge) re-fits; layout also runs on every
+        // scroll tick. Observing `bounds` instead misses the initial layout:
+        // SwiftUI sizes this view through `frame`, which never calls it.
+        if safeAreaLayoutGuide.layoutFrame.size != fittedSize, !userIsZooming {
+            zoomToFit()
         }
     }
 
@@ -83,7 +87,7 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
         contentView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(contentView)
         contentView.setupView()
-        // The initial zoom-to-fit runs from bounds.didSet once layout gives
+        // The initial zoom-to-fit runs from layoutSubviews once layout gives
         // this view a real size.
     }
 
@@ -93,6 +97,7 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
         layoutIfNeeded()
         let viewSize = safeAreaLayoutGuide.layoutFrame.size
         guard 0 < viewSize.width, 0 < viewSize.height, let context = documentController.context else { return }
+        fittedSize = viewSize
 
         let viewRatio = viewSize.width / viewSize.height
         let spriteSize = CGSize(width: context.width, height: context.height)
@@ -118,6 +123,8 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
         // gestures; sync it so panning/centering use the new dimensions.
         contentSize = contentView.frame.size
         contentView.frame.origin = .zero
+        // setZoomScale centered against the stale contentSize.
+        centerContent()
         refreshTiledPreviewCoverage()
     }
 
@@ -159,28 +166,27 @@ public class ZoomableUIView: UIScrollView, UIGestureRecognizerDelegate, UIScroll
     }
 
     public func scrollViewDidZoom(_ scrollView: UIScrollView) { // Called many times while zooming
-
-        func centerContent() {
-            if contentSize.width < safeAreaLayoutGuide.layoutFrame.width {
-                contentOffset.x = ((contentSize.width - safeAreaLayoutGuide.layoutFrame.width) / 2) - safeAreaInsets.left + safeAreaInsets.right
-            }
-            if contentSize.height < safeAreaLayoutGuide.layoutFrame.height {
-                contentOffset.y = ((contentSize.height - safeAreaLayoutGuide.layoutFrame.height) / 2) - safeAreaInsets.top + safeAreaInsets.bottom
-            }
-
-            var h: CGFloat = 0.0
-            var v: CGFloat = 0.0
-            if contentSize.width < bounds.width {
-                h = (safeAreaLayoutGuide.layoutFrame.width - contentSize.width) / 2.0
-            }
-            if contentSize.height < bounds.height {
-                v = (safeAreaLayoutGuide.layoutFrame.height - contentSize.height) / 2.0
-            }
-            contentInset = UIEdgeInsets(top: v + safeAreaInsets.top, left: h + safeAreaInsets.left, bottom: v + safeAreaInsets.bottom, right: h + safeAreaInsets.right)
-        }
-
         centerContent()
         refreshTiledPreviewCoverage()
+    }
+
+    private func centerContent() {
+        if contentSize.width < safeAreaLayoutGuide.layoutFrame.width {
+            contentOffset.x = ((contentSize.width - safeAreaLayoutGuide.layoutFrame.width) / 2) - safeAreaInsets.left + safeAreaInsets.right
+        }
+        if contentSize.height < safeAreaLayoutGuide.layoutFrame.height {
+            contentOffset.y = ((contentSize.height - safeAreaLayoutGuide.layoutFrame.height) / 2) - safeAreaInsets.top + safeAreaInsets.bottom
+        }
+
+        var h: CGFloat = 0.0
+        var v: CGFloat = 0.0
+        if contentSize.width < bounds.width {
+            h = (safeAreaLayoutGuide.layoutFrame.width - contentSize.width) / 2.0
+        }
+        if contentSize.height < bounds.height {
+            v = (safeAreaLayoutGuide.layoutFrame.height - contentSize.height) / 2.0
+        }
+        contentInset = UIEdgeInsets(top: v + safeAreaInsets.top, left: h + safeAreaInsets.left, bottom: v + safeAreaInsets.bottom, right: h + safeAreaInsets.right)
     }
 
     public func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
