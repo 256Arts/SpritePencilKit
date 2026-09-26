@@ -252,6 +252,55 @@ struct OperationLifecycleTests {
         #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 1)) == .clear)
     }
 
+    @Test func replaceAllFillRecolorsDisconnectedPixels() {
+        let controller = makeController(width: 5, height: 1)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let red = ColorComponents(red: 255, green: 0, blue: 0, opacity: 255)
+        let blue = ColorComponents(red: 0, green: 0, blue: 255, opacity: 255)
+        let wall = ColorComponents(red: 0, green: 0, blue: 0, opacity: 255)
+        // red, wall, red, wall, red — no two reds touch.
+        for x in 0..<5 {
+            controller.contextDataManager[PixelPoint(x: x, y: 0)] = x.isMultiple(of: 2) ? red : wall
+        }
+        controller.toolColorComponents = blue
+        controller.fillTool.replacesAllMatching = true
+
+        controller.fill(at: PixelPoint(x: 0, y: 0))
+        for x in 0..<5 {
+            #expect(controller.getColorComponents(at: PixelPoint(x: x, y: 0)) == (x.isMultiple(of: 2) ? blue : wall))
+        }
+
+        controller.undo()
+        for x in stride(from: 0, to: 5, by: 2) {
+            #expect(controller.getColorComponents(at: PixelPoint(x: x, y: 0)) == red)
+        }
+    }
+
+    @Test func remapColorsSkipsClearAndUndoesAsOneStep() {
+        let controller = makeController(width: 3, height: 1)
+        let undoManager = UndoManager()
+        controller.undoManager = undoManager
+        let gray = ColorComponents(red: 100, green: 100, blue: 100, opacity: 255)
+        let white = ColorComponents(red: 255, green: 255, blue: 255, opacity: 255)
+        controller.contextDataManager[PixelPoint(x: 0, y: 0)] = gray
+        controller.contextDataManager[PixelPoint(x: 1, y: 0)] = gray
+
+        var calls = 0
+        controller.remapColors { color in
+            calls += 1
+            return color.opacity == 0 ? gray : white
+        }
+        #expect(calls == 1) // once per distinct color; clear is never passed
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == white)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == white)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 2, y: 0)) == .clear)
+
+        controller.undo()
+        #expect(controller.getColorComponents(at: PixelPoint(x: 0, y: 0)) == gray)
+        #expect(controller.getColorComponents(at: PixelPoint(x: 1, y: 0)) == gray)
+    }
+
     @Test func pencilCommitFillsClosedLoopInterior() {
         // Stroke the perimeter of the (1,1)–(5,5) square in touch order; with
         // shouldFillPaths on, committing fills the interior as part of the

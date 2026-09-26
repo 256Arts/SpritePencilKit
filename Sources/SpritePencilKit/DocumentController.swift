@@ -505,10 +505,18 @@ public class DocumentController {
     // MARK: - Fill
 
     /// Flood-fills from `startPoint` and commits the result as one operation.
+    /// With `fillTool.replacesAllMatching`, every pixel of the tapped color is
+    /// replaced instead, contiguous or not.
     public func fill(at startPoint: PixelPoint) {
         guard 0 <= startPoint.x, startPoint.x < context.width, 0 <= startPoint.y, startPoint.y < context.height else { return }
         let fillFromColorComponents = getColorComponents(at: startPoint)
         guard fillFromColorComponents != toolColorComponents else { return }
+
+        if fillTool.replacesAllMatching {
+            let fillTo = toolColorComponents
+            remapColors { $0 == fillFromColorComponents ? fillTo : $0 }
+            return
+        }
 
         let maxCheckedPixels = 2048
         var stack = [startPoint]
@@ -615,6 +623,34 @@ public class DocumentController {
         for (point, neighborColorComponents) in outline {
             let color = colorComponents ?? (palette ?? Palette.sp16).shadow(forColorComponents: neighborColorComponents)
             simplePaint(colorComponents: color, at: point)
+        }
+        commitCurrentOperation()
+        refresh()
+    }
+
+    /// Passes each distinct color on the canvas through `transform` and
+    /// repaints the pixels whose color it changes, as one undoable operation.
+    /// Fully transparent pixels are left alone. `transform` runs once per
+    /// distinct color, not per pixel, so it can afford a perceptual search
+    /// (e.g. snapping to the nearest palette color).
+    public func remapColors(_ transform: (ColorComponents) -> ColorComponents) {
+        var mapped = [ColorComponents: ColorComponents]()
+        for y in 0..<context.height {
+            for x in 0..<context.width {
+                let point = PixelPoint(x: x, y: y)
+                let color = getColorComponents(at: point)
+                guard color.opacity != 0 else { continue }
+                let newColor: ColorComponents
+                if let cached = mapped[color] {
+                    newColor = cached
+                } else {
+                    newColor = transform(color)
+                    mapped[color] = newColor
+                }
+                if newColor != color {
+                    simplePaint(colorComponents: newColor, at: point)
+                }
+            }
         }
         commitCurrentOperation()
         refresh()

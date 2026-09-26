@@ -90,7 +90,13 @@ public struct EraserTool: SizableTool {
     }
 }
 public struct FillTool: Tool {
-    public init() { }
+    /// When set, a tap replaces every pixel of the tapped color across the
+    /// whole canvas instead of only the contiguous region around it.
+    public var replacesAllMatching: Bool
+
+    public init(replacesAllMatching: Bool = false) {
+        self.replacesAllMatching = replacesAllMatching
+    }
 }
 public struct MoveTool: Tool {
     // Continuous, but driven by the drag delta rather than per-point
